@@ -19,11 +19,6 @@ from telegram.ext import (
     filters,
 )
 
-
-# ============================================================
-# CONFIG
-# ============================================================
-
 app = Flask(__name__)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
@@ -35,11 +30,6 @@ PENDING_PAGE_SIZE = 5
 ADMIN_PROFESSOR_PAGE_SIZE = 5
 MAX_COMMENT_WORDS = 20
 
-
-# ============================================================
-# LOGGING
-# ============================================================
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -47,38 +37,21 @@ logging.basicConfig(
 
 logger = logging.getLogger("ostad_bot")
 
-
-# ============================================================
-# ADMIN
-# ============================================================
-
 def get_admin_ids():
     raw = os.environ.get("ADMIN_IDS", "").strip()
-
     if not raw:
         return []
-
     result = []
-
     for value in raw.split(","):
         value = value.strip()
-
         if value.isdigit():
             result.append(int(value))
-
     return result
-
 
 ADMIN_IDS = get_admin_ids()
 
-
 def is_admin(user_id):
     return user_id in ADMIN_IDS
-
-
-# ============================================================
-# DATABASE
-# ============================================================
 
 def get_connection():
     con = sqlite3.connect(
@@ -86,25 +59,18 @@ def get_connection():
         timeout=30,
         check_same_thread=False,
     )
-
     con.row_factory = sqlite3.Row
-
     con.execute("PRAGMA foreign_keys = ON")
-
     try:
         con.execute("PRAGMA journal_mode = WAL")
     except sqlite3.DatabaseError:
         logger.warning("Could not enable SQLite WAL mode.")
-
     return con
-
 
 def normalize_text(text):
     if text is None:
         return None
-
     text = str(text)
-
     text = (
         text
         .replace("\n", " ")
@@ -113,26 +79,16 @@ def normalize_text(text):
         .replace("ى", "ی")
         .replace("ك", "ک")
     )
-
     text = " ".join(text.split())
-
     return text.strip() or None
-
 
 def generate_professor_code(professor_id):
     return f"OST-{professor_id:04d}"
 
-
-# ============================================================
-# DATABASE INITIALIZATION
-# ============================================================
-
 def init_database():
     con = get_connection()
-
     try:
         cur = con.cursor()
-
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS professors (
@@ -144,7 +100,6 @@ def init_database():
             )
             """
         )
-
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS professor_requests (
@@ -157,7 +112,6 @@ def init_database():
             )
             """
         )
-
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS ratings (
@@ -174,62 +128,46 @@ def init_database():
             )
             """
         )
-
         cur.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_professors_name
             ON professors(name)
             """
         )
-
         cur.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_ratings_professor_id
             ON ratings(professor_id)
             """
         )
-
         cur.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_ratings_created_at
             ON ratings(created_at)
             """
         )
-
         cur.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_professor_requests_status
             ON professor_requests(status)
             """
         )
-
         con.commit()
-
     except Exception:
         con.rollback()
         logger.exception("Database initialization failed.")
         raise
-
     finally:
         con.close()
-
-
-# ============================================================
-# PROFESSORS
-# ============================================================
 
 def create_professor(name, course):
     name = normalize_text(name)
     course = normalize_text(course)
-
     if not name:
         return None
-
     con = get_connection()
-
     try:
         cur = con.cursor()
-
         existing = cur.execute(
             """
             SELECT id
@@ -239,10 +177,8 @@ def create_professor(name, course):
             """,
             (name,),
         ).fetchone()
-
         if existing:
             return int(existing["id"])
-
         cur.execute(
             """
             INSERT INTO professors(name, course)
@@ -250,9 +186,7 @@ def create_professor(name, course):
             """,
             (name, course),
         )
-
         professor_id = int(cur.lastrowid)
-
         cur.execute(
             """
             UPDATE professors
@@ -264,14 +198,10 @@ def create_professor(name, course):
                 professor_id,
             ),
         )
-
         con.commit()
-
         return professor_id
-
     except sqlite3.IntegrityError:
         con.rollback()
-
         existing = con.execute(
             """
             SELECT id
@@ -281,25 +211,19 @@ def create_professor(name, course):
             """,
             (name,),
         ).fetchone()
-
         if existing:
             return int(existing["id"])
-
         logger.exception("Could not create professor.")
         return None
-
     except Exception:
         con.rollback()
         logger.exception("Could not create professor.")
         return None
-
     finally:
         con.close()
 
-
 def get_professor_by_id(professor_id):
     con = get_connection()
-
     try:
         return con.execute(
             """
@@ -310,19 +234,14 @@ def get_professor_by_id(professor_id):
             """,
             (professor_id,),
         ).fetchone()
-
     finally:
         con.close()
 
-
 def get_professor_by_code(code):
     code = normalize_text(code)
-
     if not code:
         return None
-
     con = get_connection()
-
     try:
         return con.execute(
             """
@@ -333,14 +252,11 @@ def get_professor_by_code(code):
             """,
             (code,),
         ).fetchone()
-
     finally:
         con.close()
 
-
 def get_all_professors():
     con = get_connection()
-
     try:
         return con.execute(
             """
@@ -349,17 +265,13 @@ def get_all_professors():
             ORDER BY name COLLATE NOCASE ASC, id ASC
             """
         ).fetchall()
-
     finally:
         con.close()
 
-
 def delete_professor(professor_id):
     con = get_connection()
-
     try:
         cur = con.cursor()
-
         cur.execute(
             """
             DELETE FROM professors
@@ -367,27 +279,17 @@ def delete_professor(professor_id):
             """,
             (professor_id,),
         )
-
         con.commit()
-
         return cur.rowcount > 0
-
     except Exception:
         con.rollback()
         logger.exception("Could not delete professor.")
         return False
-
     finally:
         con.close()
 
-
-# ============================================================
-# RATINGS
-# ============================================================
-
 def get_rating_info(professor_id):
     con = get_connection()
-
     try:
         return con.execute(
             """
@@ -399,18 +301,13 @@ def get_rating_info(professor_id):
             """,
             (professor_id,),
         ).fetchone()
-
     finally:
         con.close()
 
-
 def get_comment_page(professor_id, page=0):
     page = max(0, int(page))
-
     offset = page * COMMENT_PAGE_SIZE
-
     con = get_connection()
-
     try:
         total_row = con.execute(
             """
@@ -422,9 +319,7 @@ def get_comment_page(professor_id, page=0):
             """,
             (professor_id,),
         ).fetchone()
-
         total = int(total_row["total"])
-
         comments = con.execute(
             """
             SELECT
@@ -445,17 +340,13 @@ def get_comment_page(professor_id, page=0):
                 offset,
             ),
         ).fetchall()
-
         total_pages = max(
             1,
             (total + COMMENT_PAGE_SIZE - 1) // COMMENT_PAGE_SIZE,
         )
-
         if page >= total_pages:
             page = total_pages - 1
-
             offset = page * COMMENT_PAGE_SIZE
-
             comments = con.execute(
                 """
                 SELECT
@@ -476,16 +367,12 @@ def get_comment_page(professor_id, page=0):
                     offset,
                 ),
             ).fetchall()
-
         return comments, total, total_pages, page
-
     finally:
         con.close()
 
-
 def get_user_rating(professor_id, user_id):
     con = get_connection()
-
     try:
         return con.execute(
             """
@@ -500,27 +387,20 @@ def get_user_rating(professor_id, user_id):
                 user_id,
             ),
         ).fetchone()
-
     finally:
         con.close()
-
 
 def save_rating(professor_id, user_id, score, comment):
     if score not in range(1, 6):
         raise ValueError("امتیاز باید بین ۱ تا ۵ باشد.")
-
     comment = normalize_text(comment)
-
     if comment:
         word_count = len(comment.split())
-
         if word_count > MAX_COMMENT_WORDS:
             raise ValueError(
                 f"نظر نمی‌تواند بیشتر از {MAX_COMMENT_WORDS} کلمه باشد."
             )
-
     con = get_connection()
-
     try:
         con.execute(
             """
@@ -531,7 +411,6 @@ def save_rating(professor_id, user_id, score, comment):
                 comment
             )
             VALUES (?, ?, ?, ?)
-
             ON CONFLICT(professor_id, user_id)
             DO UPDATE SET
                 score = excluded.score,
@@ -545,34 +424,22 @@ def save_rating(professor_id, user_id, score, comment):
                 comment,
             ),
         )
-
         con.commit()
-
     except Exception:
         con.rollback()
         logger.exception("Could not save rating.")
         raise
-
     finally:
         con.close()
-
-
-# ============================================================
-# PROFESSOR REQUESTS
-# ============================================================
 
 def create_professor_request(name, course, requester_id):
     name = normalize_text(name)
     course = normalize_text(course)
-
     if not name:
         raise ValueError("نام استاد الزامی است.")
-
     con = get_connection()
-
     try:
         cur = con.cursor()
-
         cur.execute(
             """
             INSERT INTO professor_requests(
@@ -588,25 +455,18 @@ def create_professor_request(name, course, requester_id):
                 requester_id,
             ),
         )
-
         request_id = int(cur.lastrowid)
-
         con.commit()
-
         return request_id
-
     except Exception:
         con.rollback()
         logger.exception("Could not create professor request.")
         raise
-
     finally:
         con.close()
 
-
 def get_request(request_id):
     con = get_connection()
-
     try:
         return con.execute(
             """
@@ -617,14 +477,11 @@ def get_request(request_id):
             """,
             (request_id,),
         ).fetchone()
-
     finally:
         con.close()
 
-
 def get_pending_requests():
     con = get_connection()
-
     try:
         return con.execute(
             """
@@ -634,17 +491,13 @@ def get_pending_requests():
             ORDER BY id ASC
             """
         ).fetchall()
-
     finally:
         con.close()
 
-
 def approve_request(request_id):
     con = get_connection()
-
     try:
         cur = con.cursor()
-
         request = cur.execute(
             """
             SELECT *
@@ -655,10 +508,8 @@ def approve_request(request_id):
             """,
             (request_id,),
         ).fetchone()
-
         if not request:
             return None
-
         existing = cur.execute(
             """
             SELECT id
@@ -668,7 +519,6 @@ def approve_request(request_id):
             """,
             (request["name"],),
         ).fetchone()
-
         if existing:
             cur.execute(
                 """
@@ -678,11 +528,8 @@ def approve_request(request_id):
                 """,
                 (request_id,),
             )
-
             con.commit()
-
             return int(existing["id"])
-
         cur.execute(
             """
             INSERT INTO professors(name, course)
@@ -693,9 +540,7 @@ def approve_request(request_id):
                 request["course"],
             ),
         )
-
         professor_id = int(cur.lastrowid)
-
         cur.execute(
             """
             UPDATE professors
@@ -707,7 +552,6 @@ def approve_request(request_id):
                 professor_id,
             ),
         )
-
         cur.execute(
             """
             UPDATE professor_requests
@@ -716,26 +560,19 @@ def approve_request(request_id):
             """,
             (request_id,),
         )
-
         con.commit()
-
         return professor_id
-
     except Exception:
         con.rollback()
         logger.exception("Could not approve request.")
         raise
-
     finally:
         con.close()
 
-
 def reject_request(request_id):
     con = get_connection()
-
     try:
         cur = con.cursor()
-
         cur.execute(
             """
             UPDATE professor_requests
@@ -745,23 +582,14 @@ def reject_request(request_id):
             """,
             (request_id,),
         )
-
         con.commit()
-
         return cur.rowcount > 0
-
     except Exception:
         con.rollback()
         logger.exception("Could not reject request.")
         return False
-
     finally:
         con.close()
-
-
-# ============================================================
-# CONVERSATION STATES
-# ============================================================
 
 (
     ADD_NAME,
@@ -772,11 +600,6 @@ def reject_request(request_id):
     ADMIN_ADD_NAME,
     ADMIN_ADD_COURSE,
 ) = range(1, 8)
-
-
-# ============================================================
-# KEYBOARDS
-# ============================================================
 
 def main_menu_keyboard(user_id):
     rows = [
@@ -799,7 +622,6 @@ def main_menu_keyboard(user_id):
             )
         ],
     ]
-
     if is_admin(user_id):
         rows.append(
             [
@@ -809,9 +631,7 @@ def main_menu_keyboard(user_id):
                 )
             ]
         )
-
     return InlineKeyboardMarkup(rows)
-
 
 def home_keyboard(user_id):
     return InlineKeyboardMarkup(
@@ -824,7 +644,6 @@ def home_keyboard(user_id):
             ]
         ]
     )
-
 
 def admin_menu_keyboard():
     return InlineKeyboardMarkup(
@@ -856,17 +675,10 @@ def admin_menu_keyboard():
         ]
     )
 
-
-# ============================================================
-# START
-# ============================================================
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
-
     if not update.message:
         return
-
     await update.message.reply_text(
         "🎓 <b>سامانه نظرسنجی اساتید</b>\n\n"
         "از منوی زیر استفاده کنید.\n\n"
@@ -877,20 +689,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ),
     )
 
-
-# ============================================================
-# MAIN MENU
-# ============================================================
-
 async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-
     user_id = q.from_user.id
-
     await q.answer()
-
     context.user_data.clear()
-
     await q.edit_message_text(
         "🏠 <b>منوی اصلی</b>\n\n"
         "لطفاً یک گزینه را انتخاب کنید:",
@@ -898,22 +701,14 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=main_menu_keyboard(user_id),
     )
 
-
-# ============================================================
-# PROFESSOR LIST
-# ============================================================
-
 async def list_professors(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
     q = update.callback_query
-
     await q.answer()
-
     try:
         professors = get_all_professors()
-
         if not professors:
             await q.edit_message_text(
                 "📋 <b>لیست اساتید</b>\n\n"
@@ -922,66 +717,52 @@ async def list_professors(
                 reply_markup=home_keyboard(q.from_user.id),
             )
             return
-
         try:
             page = int(q.data.split(":")[1])
         except (IndexError, ValueError):
             page = 0
-
         total = len(professors)
-
         total_pages = max(
             1,
             (total + PROFESSOR_PAGE_SIZE - 1)
             // PROFESSOR_PAGE_SIZE,
         )
-
         page = max(
             0,
             min(page, total_pages - 1),
         )
-
         start_index = page * PROFESSOR_PAGE_SIZE
         end_index = start_index + PROFESSOR_PAGE_SIZE
-
         page_professors = professors[
             start_index:end_index
         ]
-
         text = (
             "📋 <b>لیست اساتید</b>\n\n"
             f"صفحه <b>{page + 1}</b> از <b>{total_pages}</b>\n\n"
         )
-
         buttons = []
-
         for professor in page_professors:
             name = escape(
                 professor["name"]
             )
-
             course = escape(
                 professor["course"]
                 or "درس ثبت نشده"
             )
-
             code = escape(
                 professor["code"]
                 or generate_professor_code(
                     professor["id"]
                 )
             )
-
             text += (
                 f"👤 <b>{name}</b>\n"
                 f"📚 درس: <b>{course}</b>\n"
                 f"🔢 کد: <code>{code}</code>\n\n"
             )
-
             button_text = (
                 f"👤 {professor['name'][:25]}"
             )
-
             buttons.append(
                 [
                     InlineKeyboardButton(
@@ -992,9 +773,7 @@ async def list_professors(
                     )
                 ]
             )
-
         navigation = []
-
         if page > 0:
             navigation.append(
                 InlineKeyboardButton(
@@ -1004,7 +783,6 @@ async def list_professors(
                     ),
                 )
             )
-
         if page < total_pages - 1:
             navigation.append(
                 InlineKeyboardButton(
@@ -1014,10 +792,8 @@ async def list_professors(
                     ),
                 )
             )
-
         if navigation:
             buttons.append(navigation)
-
         buttons.append(
             [
                 InlineKeyboardButton(
@@ -1026,7 +802,6 @@ async def list_professors(
                 )
             ]
         )
-
         buttons.append(
             [
                 InlineKeyboardButton(
@@ -1035,16 +810,13 @@ async def list_professors(
                 )
             ]
         )
-
         await q.edit_message_text(
             text,
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(buttons),
         )
-
     except Exception:
         logger.exception("Error while showing professor list.")
-
         await q.edit_message_text(
             "❌ خطا در دریافت لیست اساتید.\n"
             "لطفاً دوباره تلاش کنید.",
@@ -1053,21 +825,13 @@ async def list_professors(
             ),
         )
 
-
-# ============================================================
-# ENTER PROFESSOR CODE
-# ============================================================
-
 async def enter_code_start(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
     q = update.callback_query
-
     await q.answer()
-
     context.user_data.clear()
-
     await q.edit_message_text(
         "🔢 <b>کد استاد را وارد کنید</b>\n\n"
         "مثال:\n"
@@ -1075,18 +839,14 @@ async def enter_code_start(
         "برای لغو /cancel را ارسال کنید.",
         parse_mode=ParseMode.HTML,
     )
-
     return PROFESSOR_CODE
-
 
 async def receive_code(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
     code = normalize_text(update.message.text)
-
     professor = get_professor_by_code(code)
-
     if not professor:
         await update.message.reply_text(
             "❌ این کد پیدا نشد.\n\n"
@@ -1094,49 +854,33 @@ async def receive_code(
             "<code>OST-0001</code>",
             parse_mode=ParseMode.HTML,
         )
-
         return PROFESSOR_CODE
-
     await send_professor_page(
         update,
         professor,
         comment_page=0,
     )
-
     context.user_data.clear()
-
     return ConversationHandler.END
-
-
-# ============================================================
-# PROFESSOR DETAIL
-# ============================================================
 
 async def view_professor(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
     q = update.callback_query
-
     await q.answer()
-
     try:
         parts = q.data.split(":")
-
         professor_id = int(parts[1])
-
         comment_page = 0
-
         if len(parts) >= 3:
             try:
                 comment_page = int(parts[2])
             except ValueError:
                 comment_page = 0
-
         professor = get_professor_by_id(
             professor_id
         )
-
         if not professor:
             await q.edit_message_text(
                 "❌ استاد پیدا نشد.",
@@ -1145,18 +889,15 @@ async def view_professor(
                 ),
             )
             return
-
         await send_professor_page(
             update,
             professor,
             comment_page=comment_page,
         )
-
     except Exception:
         logger.exception(
             "Error while showing professor details."
         )
-
         await q.edit_message_text(
             "❌ خطا در نمایش اطلاعات استاد.",
             reply_markup=home_keyboard(
@@ -1164,47 +905,39 @@ async def view_professor(
             ),
         )
 
-
 async def send_professor_page(
     update: Update,
     professor,
     comment_page=0,
 ):
     professor_id = int(professor["id"])
-
     info = get_rating_info(
         professor_id
     )
-
     comments, total_comments, total_comment_pages, actual_page = (
         get_comment_page(
             professor_id,
             comment_page,
         )
     )
-
     name = escape(
         professor["name"]
     )
-
     course = escape(
         professor["course"]
         or "ثبت نشده"
     )
-
     code = escape(
         professor["code"]
         or generate_professor_code(
             professor_id
         )
     )
-
     text = (
         f"🎓 <b>{name}</b>\n\n"
         f"📚 درس: <b>{course}</b>\n"
         f"🔢 کد: <code>{code}</code>\n\n"
     )
-
     if info["total"]:
         text += (
             f"📊 میانگین امتیاز: "
@@ -1216,12 +949,10 @@ async def send_professor_page(
         text += (
             "📊 هنوز امتیازی ثبت نشده است.\n"
         )
-
     if comments:
         text += (
             "\n💬 <b>آخرین نظرات</b>\n\n"
         )
-
         for index, comment in enumerate(
             comments,
             start=1,
@@ -1229,14 +960,12 @@ async def send_professor_page(
             comment_text = escape(
                 comment["comment"]
             )
-
             text += (
                 f"{index}. ⭐ <b>"
                 f"{comment['score']} از 5"
                 f"</b>\n"
                 f"📝 {comment_text}\n\n"
             )
-
         if total_comment_pages > 1:
             text += (
                 f"صفحه نظرات: "
@@ -1244,12 +973,10 @@ async def send_professor_page(
                 f"از "
                 f"<b>{total_comment_pages}</b>\n"
             )
-
     else:
         text += (
             "\n💬 هنوز نظری ثبت نشده است.\n"
         )
-
     buttons = [
         [
             InlineKeyboardButton(
@@ -1260,10 +987,8 @@ async def send_professor_page(
             )
         ]
     ]
-
     if total_comment_pages > 1:
         navigation = []
-
         if actual_page > 0:
             navigation.append(
                 InlineKeyboardButton(
@@ -1274,7 +999,6 @@ async def send_professor_page(
                     ),
                 )
             )
-
         if actual_page < total_comment_pages - 1:
             navigation.append(
                 InlineKeyboardButton(
@@ -1285,10 +1009,8 @@ async def send_professor_page(
                     ),
                 )
             )
-
         if navigation:
             buttons.append(navigation)
-
     buttons.append(
         [
             InlineKeyboardButton(
@@ -1297,7 +1019,6 @@ async def send_professor_page(
             )
         ]
     )
-
     buttons.append(
         [
             InlineKeyboardButton(
@@ -1306,9 +1027,7 @@ async def send_professor_page(
             )
         ]
     )
-
     markup = InlineKeyboardMarkup(buttons)
-
     if update.callback_query:
         try:
             await update.callback_query.edit_message_text(
@@ -1319,7 +1038,6 @@ async def send_professor_page(
         except Exception as exc:
             if "Message is not modified" not in str(exc):
                 raise
-
     elif update.message:
         await update.message.reply_text(
             text,
@@ -1327,30 +1045,20 @@ async def send_professor_page(
             reply_markup=markup,
         )
 
-
-# ============================================================
-# STUDENT ADD PROFESSOR
-# ============================================================
-
 async def student_add_start(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
     q = update.callback_query
-
     await q.answer()
-
     context.user_data.clear()
-
     await q.edit_message_text(
         "➕ <b>پیشنهاد استاد جدید</b>\n\n"
         "نام و نام خانوادگی استاد را وارد کنید.\n\n"
         "برای لغو /cancel را ارسال کنید.",
         parse_mode=ParseMode.HTML,
     )
-
     return ADD_NAME
-
 
 async def student_receive_name(
     update: Update,
@@ -1359,22 +1067,17 @@ async def student_receive_name(
     name = normalize_text(
         update.message.text
     )
-
     if not name or len(name) < 2:
         await update.message.reply_text(
             "❌ نام معتبر وارد کنید."
         )
         return ADD_NAME
-
     context.user_data["new_prof_name"] = name
-
     await update.message.reply_text(
         "📚 نام درس را وارد کنید.\n\n"
         "اگر درس مشخص نیست، «ندارم» را بنویسید."
     )
-
     return ADD_COURSE
-
 
 async def student_receive_course(
     update: Update,
@@ -1383,7 +1086,6 @@ async def student_receive_course(
     course = normalize_text(
         update.message.text
     )
-
     if course in {
         "ندارم",
         "ندارد",
@@ -1392,13 +1094,11 @@ async def student_receive_course(
         "ندارم ",
     }:
         course = None
-
     return await finish_student_request(
         update,
         context,
         course,
     )
-
 
 async def finish_student_request(
     update: Update,
@@ -1408,7 +1108,6 @@ async def finish_student_request(
     name = context.user_data.get(
         "new_prof_name"
     )
-
     if not name:
         await update.message.reply_text(
             "❌ اطلاعات درخواست ناقص است.",
@@ -1416,23 +1115,18 @@ async def finish_student_request(
                 update.effective_user.id
             ),
         )
-
         context.user_data.clear()
-
         return ConversationHandler.END
-
     try:
         request_id = create_professor_request(
             name,
             course,
             update.effective_user.id,
         )
-
         await notify_admins_about_request(
             context,
             request_id,
         )
-
         await update.message.reply_text(
             "✅ <b>درخواست شما ثبت شد.</b>\n\n"
             "درخواست پس از بررسی ادمین "
@@ -1442,12 +1136,10 @@ async def finish_student_request(
                 update.effective_user.id
             ),
         )
-
     except Exception:
         logger.exception(
             "Could not finish student request."
         )
-
         await update.message.reply_text(
             "❌ ثبت درخواست انجام نشد.\n"
             "لطفاً دوباره تلاش کنید.",
@@ -1455,25 +1147,16 @@ async def finish_student_request(
                 update.effective_user.id
             ),
         )
-
     context.user_data.clear()
-
     return ConversationHandler.END
-
-
-# ============================================================
-# ADMIN NOTIFICATION
-# ============================================================
 
 async def notify_admins_about_request(
     context: ContextTypes.DEFAULT_TYPE,
     request_id,
 ):
     request = get_request(request_id)
-
     if not request:
         return
-
     text = (
         "📨 <b>درخواست جدید استاد</b>\n\n"
         f"🆔 درخواست: "
@@ -1485,7 +1168,6 @@ async def notify_admins_about_request(
         f"👨‍🎓 شناسه درخواست‌دهنده: "
         f"<code>{request['requester_id']}</code>"
     )
-
     markup = InlineKeyboardMarkup(
         [
             [
@@ -1504,7 +1186,6 @@ async def notify_admins_about_request(
             ]
         ]
     )
-
     for admin_id in ADMIN_IDS:
         try:
             await context.bot.send_message(
@@ -1513,26 +1194,18 @@ async def notify_admins_about_request(
                 parse_mode=ParseMode.HTML,
                 reply_markup=markup,
             )
-
         except Exception:
             logger.exception(
                 "Could not notify admin %s",
                 admin_id,
             )
 
-
-# ============================================================
-# RATING
-# ============================================================
-
 async def rating_start(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
     q = update.callback_query
-
     await q.answer()
-
     try:
         professor_id = int(
             q.data.split(":", 1)[1]
@@ -1544,13 +1217,10 @@ async def rating_start(
                 q.from_user.id
             ),
         )
-
         return ConversationHandler.END
-
     professor = get_professor_by_id(
         professor_id
     )
-
     if not professor:
         await q.edit_message_text(
             "❌ استاد پیدا نشد.",
@@ -1558,20 +1228,15 @@ async def rating_start(
                 q.from_user.id
             ),
         )
-
         return ConversationHandler.END
-
     context.user_data.clear()
-
     context.user_data[
         "rating_professor_id"
     ] = professor_id
-
     old_rating = get_user_rating(
         professor_id,
         q.from_user.id,
     )
-
     if old_rating:
         prefix = (
             "⚠️ شما قبلاً برای این استاد "
@@ -1581,7 +1246,6 @@ async def rating_start(
         )
     else:
         prefix = ""
-
     markup = InlineKeyboardMarkup(
         [
             [
@@ -1616,7 +1280,6 @@ async def rating_start(
             ],
         ]
     )
-
     await q.edit_message_text(
         f"📝 <b>امتیازدهی به "
         f"{escape(professor['name'])}</b>\n\n"
@@ -1625,26 +1288,20 @@ async def rating_start(
         parse_mode=ParseMode.HTML,
         reply_markup=markup,
     )
-
     return RATING_SCORE
-
 
 async def select_score(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
     q = update.callback_query
-
     await q.answer()
-
     score = int(
         q.data.split(":", 1)[1]
     )
-
     context.user_data[
         "rating_score"
     ] = score
-
     markup = InlineKeyboardMarkup(
         [
             [
@@ -1661,7 +1318,6 @@ async def select_score(
             ],
         ]
     )
-
     await q.edit_message_text(
         "💬 <b>نظر خود را بنویسید</b>\n\n"
         f"حداکثر <b>{MAX_COMMENT_WORDS} کلمه</b>.\n\n"
@@ -1670,9 +1326,7 @@ async def select_score(
         parse_mode=ParseMode.HTML,
         reply_markup=markup,
     )
-
     return RATING_COMMENT
-
 
 async def receive_comment(
     update: Update,
@@ -1681,18 +1335,14 @@ async def receive_comment(
     comment = normalize_text(
         update.message.text
     )
-
     if not comment:
         await update.message.reply_text(
             "❌ متن نظر نمی‌تواند خالی باشد."
         )
-
         return RATING_COMMENT
-
     word_count = len(
         comment.split()
     )
-
     if word_count > MAX_COMMENT_WORDS:
         await update.message.reply_text(
             "❌ <b>نظر شما بیشتر از حد مجاز است.</b>\n\n"
@@ -1701,31 +1351,25 @@ async def receive_comment(
             "لطفاً نظر را کوتاه‌تر کنید.",
             parse_mode=ParseMode.HTML,
         )
-
         return RATING_COMMENT
-
     return await finish_rating(
         update,
         context,
         comment,
     )
 
-
 async def skip_comment(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
     q = update.callback_query
-
     await q.answer()
-
     return await finish_rating(
         update,
         context,
         None,
         query=q,
     )
-
 
 async def finish_rating(
     update: Update,
@@ -1736,20 +1380,16 @@ async def finish_rating(
     professor_id = context.user_data.get(
         "rating_professor_id"
     )
-
     score = context.user_data.get(
         "rating_score"
     )
-
     if not professor_id or not score:
         text = (
             "❌ اطلاعات امتیازدهی ناقص است."
         )
-
         markup = home_keyboard(
             update.effective_user.id
         )
-
         if query:
             await query.edit_message_text(
                 text,
@@ -1760,11 +1400,8 @@ async def finish_rating(
                 text,
                 reply_markup=markup,
             )
-
         context.user_data.clear()
-
         return ConversationHandler.END
-
     try:
         save_rating(
             professor_id,
@@ -1772,12 +1409,10 @@ async def finish_rating(
             score,
             comment,
         )
-
         text = (
             "✅ <b>امتیاز شما ثبت شد.</b>\n\n"
             "امتیازدهی شما ناشناس است."
         )
-
         markup = InlineKeyboardMarkup(
             [
                 [
@@ -1796,7 +1431,6 @@ async def finish_rating(
                 ],
             ]
         )
-
         if query:
             await query.edit_message_text(
                 text,
@@ -1809,7 +1443,6 @@ async def finish_rating(
                 parse_mode=ParseMode.HTML,
                 reply_markup=markup,
             )
-
     except ValueError as exc:
         if query:
             await query.edit_message_text(
@@ -1827,14 +1460,11 @@ async def finish_rating(
                     update.effective_user.id
                 ),
             )
-
         return RATING_COMMENT
-
     except Exception:
         logger.exception(
             "Could not finish rating."
         )
-
         if query:
             await query.edit_message_text(
                 "❌ ثبت امتیاز انجام نشد.\n"
@@ -1851,31 +1481,21 @@ async def finish_rating(
                     update.effective_user.id
                 ),
             )
-
     context.user_data.clear()
-
     return ConversationHandler.END
-
-
-# ============================================================
-# ADMIN PANEL
-# ============================================================
 
 async def admin_panel(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
     q = update.callback_query
-
     if not is_admin(q.from_user.id):
         await q.answer(
             "❌ دسترسی ندارید.",
             show_alert=True,
         )
         return
-
     await q.answer()
-
     await q.edit_message_text(
         "🔐 <b>پنل مدیریت</b>\n\n"
         "یک گزینه را انتخاب کنید:",
@@ -1883,32 +1503,22 @@ async def admin_panel(
         reply_markup=admin_menu_keyboard(),
     )
 
-
-# ============================================================
-# ADMIN ADD
-# ============================================================
-
 async def admin_add_start(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
     q = update.callback_query
-
     if not is_admin(q.from_user.id):
         await q.answer(
             "❌ دسترسی ندارید.",
             show_alert=True,
         )
         return ConversationHandler.END
-
     await q.answer()
-
     context.user_data.clear()
-
     context.user_data[
         "admin_flow"
     ] = True
-
     await q.edit_message_text(
         "➕ <b>افزودن مستقیم استاد</b>\n\n"
         "نام استاد را وارد کنید.\n\n"
@@ -1916,9 +1526,7 @@ async def admin_add_start(
         "برای لغو /cancel را ارسال کنید.",
         parse_mode=ParseMode.HTML,
     )
-
     return ADMIN_ADD_NAME
-
 
 async def admin_receive_name(
     update: Update,
@@ -1928,29 +1536,22 @@ async def admin_receive_name(
         update.effective_user.id
     ):
         return ConversationHandler.END
-
     name = normalize_text(
         update.message.text
     )
-
     if not name or len(name) < 2:
         await update.message.reply_text(
             "❌ نام معتبر وارد کنید."
         )
-
         return ADMIN_ADD_NAME
-
     context.user_data[
         "admin_prof_name"
     ] = name
-
     await update.message.reply_text(
         "📚 نام درس را وارد کنید.\n\n"
         "اگر مشخص نیست، «ندارم» بنویسید."
     )
-
     return ADMIN_ADD_COURSE
-
 
 async def admin_receive_course(
     update: Update,
@@ -1960,11 +1561,9 @@ async def admin_receive_course(
         update.effective_user.id
     ):
         return ConversationHandler.END
-
     course = normalize_text(
         update.message.text
     )
-
     if course in {
         "ندارم",
         "ندارد",
@@ -1972,13 +1571,11 @@ async def admin_receive_course(
         "ندارم.",
     }:
         course = None
-
     return await finish_admin_add(
         update,
         context,
         course,
     )
-
 
 async def finish_admin_add(
     update: Update,
@@ -1986,40 +1583,31 @@ async def finish_admin_add(
     course,
 ):
     user_id = update.effective_user.id
-
     if not is_admin(user_id):
         context.user_data.clear()
         return ConversationHandler.END
-
     name = context.user_data.get(
         "admin_prof_name"
     )
-
     if not name:
         await update.message.reply_text(
             "❌ اطلاعات ناقص است.",
             reply_markup=admin_menu_keyboard(),
         )
-
         context.user_data.clear()
-
         return ConversationHandler.END
-
     try:
         professor_id = create_professor(
             name,
             course,
         )
-
         if not professor_id:
             raise RuntimeError(
                 "Professor creation failed."
             )
-
         professor = get_professor_by_id(
             professor_id
         )
-
         text = (
             "✅ <b>استاد با موفقیت اضافه شد.</b>\n\n"
             f"👤 نام: "
@@ -2029,31 +1617,21 @@ async def finish_admin_add(
             f"🔢 کد استاد: "
             f"<code>{escape(professor['code'])}</code>"
         )
-
         await update.message.reply_text(
             text,
             parse_mode=ParseMode.HTML,
             reply_markup=admin_menu_keyboard(),
         )
-
     except Exception:
         logger.exception(
             "Could not add professor from admin."
         )
-
         await update.message.reply_text(
             "❌ افزودن استاد انجام نشد.",
             reply_markup=admin_menu_keyboard(),
         )
-
     context.user_data.clear()
-
     return ConversationHandler.END
-
-
-# ============================================================
-# PENDING REQUESTS
-# ============================================================
 
 async def pending_requests(
     update: Update,
@@ -2062,7 +1640,6 @@ async def pending_requests(
     answer_callback=True,
 ):
     q = update.callback_query
-
     if not is_admin(q.from_user.id):
         if answer_callback:
             await q.answer(
@@ -2070,12 +1647,9 @@ async def pending_requests(
                 show_alert=True,
             )
         return
-
     if answer_callback:
         await q.answer()
-
     requests = get_pending_requests()
-
     if not requests:
         await q.edit_message_text(
             "📨 <b>درخواستی در انتظار نیست.</b>",
@@ -2083,7 +1657,6 @@ async def pending_requests(
             reply_markup=admin_menu_keyboard(),
         )
         return
-
     if page is None:
         try:
             page = int(
@@ -2091,47 +1664,37 @@ async def pending_requests(
             )
         except (IndexError, ValueError):
             page = 0
-
     total = len(requests)
-
     total_pages = max(
         1,
         (total + PENDING_PAGE_SIZE - 1)
         // PENDING_PAGE_SIZE,
     )
-
     page = max(
         0,
         min(page, total_pages - 1),
     )
-
     start_index = (
         page * PENDING_PAGE_SIZE
     )
-
     end_index = (
         start_index + PENDING_PAGE_SIZE
     )
-
     page_requests = requests[
         start_index:end_index
     ]
-
     text = (
         "📨 <b>درخواست‌های در انتظار</b>\n\n"
         f"صفحه <b>{page + 1}</b> از "
         f"<b>{total_pages}</b>\n\n"
     )
-
     buttons = []
-
     for request in page_requests:
         text += (
             f"🆔 <code>{request['id']}</code>\n"
             f"👤 <b>{escape(request['name'])}</b>\n"
             f"📚 {escape(request['course'] or 'ثبت نشده')}\n\n"
         )
-
         buttons.append(
             [
                 InlineKeyboardButton(
@@ -2148,9 +1711,7 @@ async def pending_requests(
                 ),
             ]
         )
-
     navigation = []
-
     if page > 0:
         navigation.append(
             InlineKeyboardButton(
@@ -2160,7 +1721,6 @@ async def pending_requests(
                 ),
             )
         )
-
     if page < total_pages - 1:
         navigation.append(
             InlineKeyboardButton(
@@ -2170,10 +1730,8 @@ async def pending_requests(
                 ),
             )
         )
-
     if navigation:
         buttons.append(navigation)
-
     buttons.append(
         [
             InlineKeyboardButton(
@@ -2182,7 +1740,6 @@ async def pending_requests(
             )
         ]
     )
-
     await q.edit_message_text(
         text,
         parse_mode=ParseMode.HTML,
@@ -2191,88 +1748,69 @@ async def pending_requests(
         ),
     )
 
-
-# ============================================================
-# REQUEST ACTION
-# ============================================================
-
 async def request_action(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
     q = update.callback_query
-
     if not is_admin(q.from_user.id):
         await q.answer(
             "❌ دسترسی ندارید.",
             show_alert=True,
         )
         return
-
     await q.answer()
-
     try:
         action, request_id_text = (
             q.data.split(":", 1)
         )
-
         request_id = int(
             request_id_text
         )
-
     except (ValueError, IndexError):
         await q.edit_message_text(
             "❌ درخواست نامعتبر است.",
             reply_markup=admin_menu_keyboard(),
         )
         return
-
     request = get_request(
         request_id
     )
-
     if not request:
         await q.edit_message_text(
             "❌ درخواست پیدا نشد.",
             reply_markup=admin_menu_keyboard(),
         )
         return
-
     if request["status"] != "pending":
         await q.edit_message_text(
             "⚠️ این درخواست قبلاً بررسی شده است.",
             reply_markup=admin_menu_keyboard(),
         )
         return
-
     try:
         if action == "approve":
             professor_id = approve_request(
                 request_id
             )
-
             if not professor_id:
                 raise RuntimeError(
                     "Approval failed."
                 )
-
             professor = get_professor_by_id(
                 professor_id
             )
-
             text = (
                 "✅ <b>درخواست تأیید شد.</b>\n\n"
                 f"👤 <b>{escape(professor['name'])}</b>\n"
                 f"📚 {escape(professor['course'] or 'ثبت نشده')}\n"
                 f"🔢 <code>{escape(professor['code'])}</code>"
             )
-
             await q.edit_message_text(
                 text,
                 parse_mode=ParseMode.HTML,
                 reply_markup=admin_menu_keyboard(),
             )
-
             try:
                 await context.bot.send_message(
                     chat_id=request["requester_id"],
@@ -2285,22 +1823,18 @@ async def request_action(
                     ),
                     parse_mode=ParseMode.HTML,
                 )
-
             except Exception:
                 logger.exception(
                     "Requester approval notification failed."
                 )
-
         elif action == "reject":
             success = reject_request(
                 request_id
             )
-
             if not success:
                 raise RuntimeError(
                     "Rejection failed."
                 )
-
             await q.edit_message_text(
                 (
                     "❌ <b>درخواست رد شد.</b>\n\n"
@@ -2309,7 +1843,6 @@ async def request_action(
                 parse_mode=ParseMode.HTML,
                 reply_markup=admin_menu_keyboard(),
             )
-
             try:
                 await context.bot.send_message(
                     chat_id=request["requester_id"],
@@ -2319,27 +1852,19 @@ async def request_action(
                     ),
                     parse_mode=ParseMode.HTML,
                 )
-
             except Exception:
                 logger.exception(
                     "Requester rejection notification failed."
                 )
-
     except Exception:
         logger.exception(
             "Could not process professor request."
         )
-
         await q.edit_message_text(
             "❌ انجام عملیات ممکن نشد.\n"
             "دوباره تلاش کنید.",
             reply_markup=admin_menu_keyboard(),
         )
-
-
-# ============================================================
-# ADMIN PROFESSOR MANAGEMENT
-# ============================================================
 
 async def manage_professors(
     update: Update,
@@ -2348,7 +1873,6 @@ async def manage_professors(
     answer_callback=True,
 ):
     q = update.callback_query
-
     if not is_admin(q.from_user.id):
         if answer_callback:
             await q.answer(
@@ -2356,12 +1880,9 @@ async def manage_professors(
                 show_alert=True,
             )
         return
-
     if answer_callback:
         await q.answer()
-
     professors = get_all_professors()
-
     if not professors:
         await q.edit_message_text(
             "📋 <b>هیچ استادی ثبت نشده است.</b>",
@@ -2369,7 +1890,6 @@ async def manage_professors(
             reply_markup=admin_menu_keyboard(),
         )
         return
-
     if page is None:
         try:
             page = int(
@@ -2377,9 +1897,7 @@ async def manage_professors(
             )
         except (IndexError, ValueError):
             page = 0
-
     total = len(professors)
-
     total_pages = max(
         1,
         (
@@ -2389,45 +1907,36 @@ async def manage_professors(
         )
         // ADMIN_PROFESSOR_PAGE_SIZE,
     )
-
     page = max(
         0,
         min(page, total_pages - 1),
     )
-
     start_index = (
         page * ADMIN_PROFESSOR_PAGE_SIZE
     )
-
     end_index = (
         start_index
         + ADMIN_PROFESSOR_PAGE_SIZE
     )
-
     page_professors = professors[
         start_index:end_index
     ]
-
     text = (
         "📋 <b>مدیریت اساتید</b>\n\n"
         f"صفحه <b>{page + 1}</b> از "
         f"<b>{total_pages}</b>\n\n"
         "برای مدیریت یک استاد، آن را انتخاب کنید."
     )
-
     buttons = []
-
     for professor in page_professors:
         course = (
             professor["course"]
             or "بدون درس"
         )
-
         button_text = (
             f"👤 {professor['name'][:20]} | "
             f"{course[:15]}"
         )
-
         buttons.append(
             [
                 InlineKeyboardButton(
@@ -2438,9 +1947,7 @@ async def manage_professors(
                 )
             ]
         )
-
     navigation = []
-
     if page > 0:
         navigation.append(
             InlineKeyboardButton(
@@ -2450,7 +1957,6 @@ async def manage_professors(
                 ),
             )
         )
-
     if page < total_pages - 1:
         navigation.append(
             InlineKeyboardButton(
@@ -2460,10 +1966,8 @@ async def manage_professors(
                 ),
             )
         )
-
     if navigation:
         buttons.append(navigation)
-
     buttons.append(
         [
             InlineKeyboardButton(
@@ -2472,7 +1976,6 @@ async def manage_professors(
             )
         ]
     )
-
     await q.edit_message_text(
         text,
         parse_mode=ParseMode.HTML,
@@ -2481,22 +1984,18 @@ async def manage_professors(
         ),
     )
 
-
 async def admin_professor_details(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
     q = update.callback_query
-
     if not is_admin(q.from_user.id):
         await q.answer(
             "❌ دسترسی ندارید.",
             show_alert=True,
         )
         return
-
     await q.answer()
-
     try:
         professor_id = int(
             q.data.split(":", 1)[1]
@@ -2507,22 +2006,18 @@ async def admin_professor_details(
             reply_markup=admin_menu_keyboard(),
         )
         return
-
     professor = get_professor_by_id(
         professor_id
     )
-
     if not professor:
         await q.edit_message_text(
             "❌ استاد پیدا نشد.",
             reply_markup=admin_menu_keyboard(),
         )
         return
-
     info = get_rating_info(
         professor_id
     )
-
     text = (
         "👤 <b>اطلاعات استاد</b>\n\n"
         f"نام: <b>{escape(professor['name'])}</b>\n"
@@ -2531,7 +2026,6 @@ async def admin_professor_details(
         f"میانگین: <b>{info['average']} از 5</b>\n"
         f"تعداد رأی: <b>{info['total']}</b>"
     )
-
     await q.edit_message_text(
         text,
         parse_mode=ParseMode.HTML,
@@ -2555,26 +2049,18 @@ async def admin_professor_details(
         ),
     )
 
-
-# ============================================================
-# DELETE PROFESSOR
-# ============================================================
-
-async def delete_professor(
+async def delete_professor_callback(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
     q = update.callback_query
-
     if not is_admin(q.from_user.id):
         await q.answer(
             "❌ دسترسی ندارید.",
             show_alert=True,
         )
         return
-
     await q.answer()
-
     try:
         professor_id = int(
             q.data.split(":", 1)[1]
@@ -2585,18 +2071,15 @@ async def delete_professor(
             reply_markup=admin_menu_keyboard(),
         )
         return
-
     professor = get_professor_by_id(
         professor_id
     )
-
     if not professor:
         await q.edit_message_text(
             "❌ استاد پیدا نشد.",
             reply_markup=admin_menu_keyboard(),
         )
         return
-
     await q.edit_message_text(
         (
             "⚠️ <b>تأیید حذف</b>\n\n"
@@ -2628,22 +2111,18 @@ async def delete_professor(
         ),
     )
 
-
-async def confirm_delete(
+async def confirm_delete_callback(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
     q = update.callback_query
-
     if not is_admin(q.from_user.id):
         await q.answer(
             "❌ دسترسی ندارید.",
             show_alert=True,
         )
         return
-
     await q.answer()
-
     try:
         professor_id = int(
             q.data.split(":", 1)[1]
@@ -2654,11 +2133,9 @@ async def confirm_delete(
             reply_markup=admin_menu_keyboard(),
         )
         return
-
     success = delete_professor(
         professor_id
     )
-
     if success:
         await q.edit_message_text(
             "✅ استاد با موفقیت حذف شد.",
@@ -2670,25 +2147,17 @@ async def confirm_delete(
             reply_markup=admin_menu_keyboard(),
         )
 
-
-# ============================================================
-# CANCEL
-# ============================================================
-
 async def cancel(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
     user_id = update.effective_user.id
-
     was_admin_flow = bool(
         context.user_data.get(
             "admin_flow"
         )
     )
-
     context.user_data.clear()
-
     if update.message:
         if was_admin_flow and is_admin(user_id):
             await update.message.reply_text(
@@ -2702,28 +2171,21 @@ async def cancel(
                     user_id
                 ),
             )
-
     return ConversationHandler.END
-
 
 async def cancel_callback(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
     q = update.callback_query
-
     user_id = q.from_user.id
-
     was_admin_flow = bool(
         context.user_data.get(
             "admin_flow"
         )
     )
-
     await q.answer()
-
     context.user_data.clear()
-
     if was_admin_flow and is_admin(user_id):
         await q.edit_message_text(
             "🔐 <b>پنل مدیریت</b>\n\n"
@@ -2738,13 +2200,7 @@ async def cancel_callback(
                 user_id
             ),
         )
-
     return ConversationHandler.END
-
-
-# ============================================================
-# GLOBAL ERROR HANDLER
-# ============================================================
 
 async def error_handler(
     update: object,
@@ -2755,36 +2211,23 @@ async def error_handler(
         exc_info=context.error,
     )
 
-
-# ============================================================
-# BUILD TELEGRAM APPLICATION
-# ============================================================
-
 def build_telegram_application():
     if not BOT_TOKEN:
         raise RuntimeError(
             "BOT_TOKEN environment variable is missing."
         )
-
     if not ADMIN_IDS:
         logger.warning(
             "ADMIN_IDS is empty. "
             "No user will have admin access."
         )
-
     init_database()
-
     telegram_app = (
         Application
         .builder()
         .token(BOT_TOKEN)
         .build()
     )
-
-    # --------------------------------------------------------
-    # STUDENT ADD
-    # --------------------------------------------------------
-
     student_add = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(
@@ -2818,11 +2261,6 @@ def build_telegram_application():
         per_user=True,
         per_message=False,
     )
-
-    # --------------------------------------------------------
-    # PROFESSOR CODE
-    # --------------------------------------------------------
-
     code_conv = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(
@@ -2849,11 +2287,6 @@ def build_telegram_application():
         per_user=True,
         per_message=False,
     )
-
-    # --------------------------------------------------------
-    # RATING
-    # --------------------------------------------------------
-
     rating_conv = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(
@@ -2898,11 +2331,6 @@ def build_telegram_application():
         per_user=True,
         per_message=False,
     )
-
-    # --------------------------------------------------------
-    # ADMIN ADD
-    # --------------------------------------------------------
-
     admin_add = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(
@@ -2936,143 +2364,98 @@ def build_telegram_application():
         per_user=True,
         per_message=False,
     )
-
-    # --------------------------------------------------------
-    # CONVERSATIONS FIRST
-    # --------------------------------------------------------
-
     telegram_app.add_handler(
         student_add
     )
-
     telegram_app.add_handler(
         code_conv
     )
-
     telegram_app.add_handler(
         rating_conv
     )
-
     telegram_app.add_handler(
         admin_add
     )
-
-    # --------------------------------------------------------
-    # COMMANDS
-    # --------------------------------------------------------
-
     telegram_app.add_handler(
         CommandHandler(
             "start",
             start,
         )
     )
-
     telegram_app.add_handler(
         CommandHandler(
             "cancel",
             cancel,
         )
     )
-
-    # --------------------------------------------------------
-    # GENERAL CALLBACKS
-    # --------------------------------------------------------
-
     telegram_app.add_handler(
         CallbackQueryHandler(
             main_menu,
             pattern=r"^main_menu$",
         )
     )
-
     telegram_app.add_handler(
         CallbackQueryHandler(
             list_professors,
             pattern=r"^list_professors(?::\d+)?$",
         )
     )
-
     telegram_app.add_handler(
         CallbackQueryHandler(
             view_professor,
             pattern=r"^view_prof:\d+(?::\d+)?$",
         )
     )
-
-    # --------------------------------------------------------
-    # ADMIN
-    # --------------------------------------------------------
-
     telegram_app.add_handler(
         CallbackQueryHandler(
             admin_panel,
             pattern=r"^admin_panel$",
         )
     )
-
     telegram_app.add_handler(
         CallbackQueryHandler(
             pending_requests,
             pattern=r"^pending_requests(?::\d+)?$",
         )
     )
-
     telegram_app.add_handler(
         CallbackQueryHandler(
             manage_professors,
             pattern=r"^manage_professors(?::\d+)?$",
         )
     )
-
     telegram_app.add_handler(
         CallbackQueryHandler(
             admin_professor_details,
             pattern=r"^admin_prof:\d+$",
         )
     )
-
     telegram_app.add_handler(
         CallbackQueryHandler(
-            delete_professor,
+            delete_professor_callback,
             pattern=r"^delete_prof:\d+$",
         )
     )
-
     telegram_app.add_handler(
         CallbackQueryHandler(
-            confirm_delete,
+            confirm_delete_callback,
             pattern=r"^confirm_delete:\d+$",
         )
     )
-
     telegram_app.add_handler(
         CallbackQueryHandler(
             request_action,
             pattern=r"^(approve|reject):\d+$",
         )
     )
-
-    # --------------------------------------------------------
-    # ERROR HANDLER
-    # --------------------------------------------------------
-
     telegram_app.add_error_handler(
         error_handler
     )
-
     return telegram_app
 
-
-# ============================================================
-# RUN BOT (FIXED FOR PYTHON 3.14+)
-# ============================================================
-
 async def run_bot_async():
-    """Async version of run_bot."""
     try:
         telegram_app = build_telegram_application()
-
         logger.info("🤖 Telegram Ostad Bot is starting...")
         logger.info("BOT_TOKEN loaded: %s", bool(BOT_TOKEN))
         logger.info("ADMIN_IDS loaded: %s", ADMIN_IDS)
@@ -3080,23 +2463,16 @@ async def run_bot_async():
         logger.info("💬 Maximum comment words: %s", MAX_COMMENT_WORDS)
         logger.info("📋 Professor page size: %s", PROFESSOR_PAGE_SIZE)
         logger.info("💬 Comment page size: %s", COMMENT_PAGE_SIZE)
-
-        # ✅ راه‌حل اصلی: استفاده از initialize و start به صورت دستی
         await telegram_app.initialize()
         await telegram_app.start()
-        
-        # شروع polling
         await telegram_app.updater.start_polling(
             drop_pending_updates=True,
             allowed_updates=Update.ALL_TYPES,
         )
-
         logger.info("✅ Telegram bot is running and polling...")
-
-        # نگه داشتن برنامه در حالت اجرا
         try:
             while True:
-                await asyncio.sleep(3600)  # هر ساعت یک بار بیدار می‌شود
+                await asyncio.sleep(3600)
         except (KeyboardInterrupt, SystemExit):
             logger.info("🛑 Received shutdown signal...")
         finally:
@@ -3104,48 +2480,33 @@ async def run_bot_async():
             await telegram_app.stop()
             await telegram_app.shutdown()
             logger.info("✅ Telegram bot stopped.")
-
     except Exception:
         logger.exception("❌ Telegram bot stopped because of an error.")
         raise
 
-
 def run_bot():
-    """Run the bot with proper event loop handling."""
     try:
-        # ایجاد یک حلقه رویداد جدید
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        
         try:
-            # اجرای تابع async در حلقه
             loop.run_until_complete(run_bot_async())
         finally:
             loop.close()
-            
     except Exception:
         logger.exception("❌ Failed to run Telegram bot.")
         raise
-
-
-# ============================================================
-# FLASK
-# ============================================================
 
 @app.route("/")
 def home():
     return "✅ Telegram Ostad Bot is running!"
 
-
 @app.route("/health")
 def health():
     return "OK"
 
-
 @app.route("/ping")
 def ping():
     return "pong"
-
 
 def run_web():
     port = int(
@@ -3154,12 +2515,10 @@ def run_web():
             "5000",
         )
     )
-
     logger.info(
         "🌐 Flask server starting on port %s",
         port,
     )
-
     app.run(
         host="0.0.0.0",
         port=port,
@@ -3168,22 +2527,12 @@ def run_web():
         threaded=True,
     )
 
-
-# ============================================================
-# MAIN
-# ============================================================
-
 if __name__ == "__main__":
     logger.info("🚀 Starting Ostad Bot service...")
-
-    # Flask در ترد بک‌گراند اجرا می‌شود
     web_thread = threading.Thread(
         target=run_web,
         name="flask-web",
         daemon=True,
     )
-
     web_thread.start()
-
-    # Telegram در ترد اصلی اجرا می‌شود (برای جلوگیری از خطای asyncio)
     run_bot()
