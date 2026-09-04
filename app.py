@@ -1,4 +1,5 @@
 import os
+import asyncio
 import logging
 import sqlite3
 import threading
@@ -3064,66 +3065,66 @@ def build_telegram_application():
 
 
 # ============================================================
-# RUN BOT
+# RUN BOT (FIXED FOR PYTHON 3.14+)
 # ============================================================
 
-def run_bot():
-    """
-    IMPORTANT:
-    Telegram polling must run in the MAIN THREAD.
-
-    This fixes:
-    set_wakeup_fd only works in main thread
-    """
-
+async def run_bot_async():
+    """Async version of run_bot."""
     try:
-        telegram_app = (
-            build_telegram_application()
-        )
+        telegram_app = build_telegram_application()
 
-        logger.info(
-            "🤖 Telegram Ostad Bot is starting..."
-        )
+        logger.info("🤖 Telegram Ostad Bot is starting...")
+        logger.info("BOT_TOKEN loaded: %s", bool(BOT_TOKEN))
+        logger.info("ADMIN_IDS loaded: %s", ADMIN_IDS)
+        logger.info("📚 Database: %s", DATABASE_PATH)
+        logger.info("💬 Maximum comment words: %s", MAX_COMMENT_WORDS)
+        logger.info("📋 Professor page size: %s", PROFESSOR_PAGE_SIZE)
+        logger.info("💬 Comment page size: %s", COMMENT_PAGE_SIZE)
 
-        logger.info(
-            "BOT_TOKEN loaded: %s",
-            bool(BOT_TOKEN),
-        )
-
-        logger.info(
-            "ADMIN_IDS loaded: %s",
-            ADMIN_IDS,
-        )
-
-        logger.info(
-            "📚 Database: %s",
-            DATABASE_PATH,
-        )
-
-        logger.info(
-            "💬 Maximum comment words: %s",
-            MAX_COMMENT_WORDS,
-        )
-
-        logger.info(
-            "📋 Professor page size: %s",
-            PROFESSOR_PAGE_SIZE,
-        )
-
-        logger.info(
-            "💬 Comment page size: %s",
-            COMMENT_PAGE_SIZE,
-        )
-
-        telegram_app.run_polling(
+        # ✅ راه‌حل اصلی: استفاده از initialize و start به صورت دستی
+        await telegram_app.initialize()
+        await telegram_app.start()
+        
+        # شروع polling
+        await telegram_app.updater.start_polling(
             drop_pending_updates=True,
             allowed_updates=Update.ALL_TYPES,
         )
 
+        logger.info("✅ Telegram bot is running and polling...")
+
+        # نگه داشتن برنامه در حالت اجرا
+        try:
+            while True:
+                await asyncio.sleep(3600)  # هر ساعت یک بار بیدار می‌شود
+        except (KeyboardInterrupt, SystemExit):
+            logger.info("🛑 Received shutdown signal...")
+        finally:
+            logger.info("🛑 Stopping Telegram bot...")
+            await telegram_app.stop()
+            await telegram_app.shutdown()
+            logger.info("✅ Telegram bot stopped.")
+
     except Exception:
-        logger.exception(
-            "❌ Telegram bot stopped because of an error."
-        )
+        logger.exception("❌ Telegram bot stopped because of an error.")
+        raise
+
+
+def run_bot():
+    """Run the bot with proper event loop handling."""
+    try:
+        # ایجاد یک حلقه رویداد جدید
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        try:
+            # اجرای تابع async در حلقه
+            loop.run_until_complete(run_bot_async())
+        finally:
+            loop.close()
+            
+    except Exception:
+        logger.exception("❌ Failed to run Telegram bot.")
         raise
 
 
@@ -3173,12 +3174,9 @@ def run_web():
 # ============================================================
 
 if __name__ == "__main__":
-    logger.info(
-        "🚀 Starting Ostad Bot service..."
-    )
+    logger.info("🚀 Starting Ostad Bot service...")
 
-    # Flask runs in background thread.
-    # Telegram polling runs in MAIN THREAD.
+    # Flask در ترد بک‌گراند اجرا می‌شود
     web_thread = threading.Thread(
         target=run_web,
         name="flask-web",
@@ -3187,5 +3185,5 @@ if __name__ == "__main__":
 
     web_thread.start()
 
-    # DO NOT put this inside another thread.
+    # Telegram در ترد اصلی اجرا می‌شود (برای جلوگیری از خطای asyncio)
     run_bot()
