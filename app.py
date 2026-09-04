@@ -686,8 +686,7 @@ def reject_request(request_id):
     ADMIN_ADD_COURSE,
     ADMIN_ADD_UNIVERSITY,
     SEARCH_NAME,
-    CONFIRM_ADD,
-) = range(1, 11)
+) = range(1, 10)
 
 def main_menu_keyboard(user_id):
     rows = [
@@ -924,10 +923,11 @@ async def student_receive_name(update: Update, context: ContextTypes.DEFAULT_TYP
         text += "❓ اگر استاد مورد نظر شما در لیست بالا نیست، روی دکمه «ادامه» کلیک کنید.\n\n"
         text += "⚠️ توجه: درخواست شما پس از بررسی ادمین ثبت خواهد شد."
         
+        # ذخیره نام در context.user_data
         context.user_data["pending_prof_name"] = name
         
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ ادامه و ثبت درخواست", callback_data=f"confirm_add:{name}")],
+            [InlineKeyboardButton("✅ ادامه و ثبت درخواست", callback_data=f"confirm_add_professor")],
             [InlineKeyboardButton("🔍 جستجوی مجدد", callback_data="search_professor")],
             [InlineKeyboardButton("🏠 منوی اصلی", callback_data="main_menu")]
         ])
@@ -937,8 +937,8 @@ async def student_receive_name(update: Update, context: ContextTypes.DEFAULT_TYP
             parse_mode=ParseMode.HTML,
             reply_markup=keyboard,
         )
-        # مهم: اینجا باید ConversationHandler را END کنیم تا کاربر بتواند روی دکمه کلیک کند
-        context.user_data.clear()
+        # اینجا باید به END برگردیم تا کاربر روی دکمه کلیک کنه
+        context.user_data["awaiting_confirmation"] = True
         return ConversationHandler.END
     
     context.user_data["new_prof_name"] = name
@@ -954,14 +954,15 @@ async def confirm_add_professor(update: Update, context: ContextTypes.DEFAULT_TY
     user_id = q.from_user.id
     await q.answer()
     
-    # استخراج نام از callback_data
-    try:
-        _, name = q.data.split(":", 1)
-    except ValueError:
+    # دریافت نام از context.user_data
+    name = context.user_data.get("pending_prof_name")
+    
+    if not name:
         await q.edit_message_text(
             "❌ اطلاعات ناقص است. لطفاً دوباره تلاش کنید.",
             reply_markup=home_keyboard(user_id),
         )
+        context.user_data.clear()
         return ConversationHandler.END
     
     pending_request = get_user_pending_request(user_id)
@@ -975,12 +976,17 @@ async def confirm_add_professor(update: Update, context: ContextTypes.DEFAULT_TY
         context.user_data.clear()
         return ConversationHandler.END
     
-    # ذخیره نام در context.user_data برای مراحل بعدی
+    # پاک کردن context.user_data و تنظیم مجدد
+    context.user_data.clear()
     context.user_data["new_prof_name"] = name
     
-    # ارسال پیام جدید برای دریافت درس
-    # توجه: اینجا از send_message استفاده می‌کنیم نه edit_message_text چون می‌خواهیم کاربر
-    # بتواند پیام متنی ارسال کند
+    # ویرایش پیام قبلی به یک پیام تایید
+    await q.edit_message_text(
+        f"✅ در حال ثبت درخواست برای «<b>{escape(name)}</b>»",
+        parse_mode=ParseMode.HTML,
+    )
+    
+    # ارسال پیام جدید برای دریافت درس - اینجا از send_message استفاده می‌کنیم
     await q.message.reply_text(
         f"➕ <b>پیشنهاد استاد جدید</b>\n\n"
         f"نام: <b>{escape(name)}</b>\n\n"
@@ -990,13 +996,7 @@ async def confirm_add_professor(update: Update, context: ContextTypes.DEFAULT_TY
         parse_mode=ParseMode.HTML,
     )
     
-    # پیام قبلی را ویرایش می‌کنیم تا وضعیت مشخص شود
-    await q.edit_message_text(
-        f"✅ ادامه ثبت درخواست برای «<b>{escape(name)}</b>»",
-        parse_mode=ParseMode.HTML,
-    )
-    
-    # بازگشت به مرحله ADD_COURSE
+    # برگشت به مرحله ADD_COURSE
     return ADD_COURSE
 
 async def student_receive_course(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2163,7 +2163,7 @@ def build_telegram_application():
     telegram_app.add_handler(CommandHandler("cancel", cancel))
     
     telegram_app.add_handler(CallbackQueryHandler(main_menu, pattern=r"^main_menu$"))
-    telegram_app.add_handler(CallbackQueryHandler(confirm_add_professor, pattern=r"^confirm_add:.+$"))
+    telegram_app.add_handler(CallbackQueryHandler(confirm_add_professor, pattern=r"^confirm_add_professor$"))
     telegram_app.add_handler(CallbackQueryHandler(admin_panel, pattern=r"^admin_panel$"))
     telegram_app.add_handler(CallbackQueryHandler(pending_requests, pattern=r"^pending_requests(?::\d+)?$"))
     telegram_app.add_handler(CallbackQueryHandler(manage_professors, pattern=r"^manage_professors(?::\d+)?$"))
