@@ -670,8 +670,7 @@ def reject_request(request_id):
     ADMIN_ADD_COURSE,
     ADMIN_ADD_UNIVERSITY,
     SEARCH_NAME,
-    SUGGEST_ADD,
-) = range(1, 11)
+) = range(1, 10)
 
 def main_menu_keyboard(user_id):
     rows = [
@@ -799,9 +798,8 @@ async def receive_search_name(update: Update, context: ContextTypes.DEFAULT_TYPE
     results = search_professors_by_name(search_term)
     
     if not results:
-        context.user_data["suggested_name"] = search_term
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("➕ پیشنهاد افزودن این استاد", callback_data="suggest_add")],
+            [InlineKeyboardButton("➕ پیشنهاد افزودن استاد جدید", callback_data="student_add")],
             [InlineKeyboardButton("🔍 جستجوی مجدد", callback_data="search_professor")],
             [InlineKeyboardButton("🏠 منوی اصلی", callback_data="main_menu")]
         ])
@@ -845,30 +843,6 @@ async def receive_search_name(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data.clear()
     return ConversationHandler.END
 
-async def suggest_add_from_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    
-    name = context.user_data.get("suggested_name")
-    if not name:
-        await q.edit_message_text(
-            "❌ اطلاعات ناقص است. دوباره جستجو کنید.",
-            reply_markup=home_keyboard(q.from_user.id),
-        )
-        context.user_data.clear()
-        return ConversationHandler.END
-    
-    context.user_data["new_prof_name"] = name
-    await q.edit_message_text(
-        f"➕ <b>پیشنهاد استاد جدید</b>\n\n"
-        f"نام: <b>{escape(name)}</b>\n\n"
-        "📚 نام درس را وارد کنید.\n\n"
-        "اگر درس مشخص نیست، «ندارم» را بنویسید.\n\n"
-        "برای لغو /cancel را ارسال کنید.",
-        parse_mode=ParseMode.HTML,
-    )
-    return ADD_COURSE
-
 async def student_add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -889,11 +863,9 @@ async def student_receive_name(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return ADD_NAME
     
-    # جستجوی اساتید مشابه
     similar_professors = search_professors_by_name(name)
     
     if similar_professors:
-        # ساخت پیام نمایش اساتید مشابه
         text = "⚠️ <b>اساتید مشابهی در سیستم ثبت شده‌اند:</b>\n\n"
         for prof in similar_professors[:5]:
             text += f"👤 <b>{escape(prof['name'])}</b>\n"
@@ -903,22 +875,15 @@ async def student_receive_name(update: Update, context: ContextTypes.DEFAULT_TYP
                 text += f"🏛 {escape(prof['university'])}\n"
             text += "\n"
         
-        text += "❓ اگر استاد مورد نظر شما در لیست بالا نیست، می‌توانید درخواست ثبت کنید.\n\n"
+        text += "❓ اگر استاد مورد نظر شما در لیست بالا نیست، روی دکمه «ادامه» کلیک کنید.\n\n"
         text += "⚠️ توجه: درخواست شما پس از بررسی ادمین ثبت خواهد شد."
         
-        # ذخیره نام در context برای استفاده بعدی
         context.user_data["pending_prof_name"] = name
         
         keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("✅ ثبت درخواست جدید", callback_data="confirm_add_professor")
-            ],
-            [
-                InlineKeyboardButton("🔍 جستجوی مجدد", callback_data="search_professor")
-            ],
-            [
-                InlineKeyboardButton("🏠 منوی اصلی", callback_data="main_menu")
-            ]
+            [InlineKeyboardButton("✅ ادامه و ثبت درخواست", callback_data="confirm_add_professor")],
+            [InlineKeyboardButton("🔍 جستجوی مجدد", callback_data="search_professor")],
+            [InlineKeyboardButton("🏠 منوی اصلی", callback_data="main_menu")]
         ])
         
         await update.message.reply_text(
@@ -926,19 +891,17 @@ async def student_receive_name(update: Update, context: ContextTypes.DEFAULT_TYP
             parse_mode=ParseMode.HTML,
             reply_markup=keyboard,
         )
-        # منتظر میمونیم تا کاربر تصمیم بگیره
         return ConversationHandler.END
     
-    # اگر استاد مشابهی پیدا نشد، ادامه روند عادی
     context.user_data["new_prof_name"] = name
     await update.message.reply_text(
         "📚 نام درس را وارد کنید.\n\n"
-        "اگر درس مشخص نیست، «ندارم» را بنویسید."
+        "اگر درس مشخص نیست، «ندارم» را بنویسید.\n\n"
+        "برای لغو /cancel را ارسال کنید."
     )
     return ADD_COURSE
 
 async def confirm_add_professor(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """وقتی کاربر تایید کرد که استاد مورد نظرش در لیست نیست"""
     q = update.callback_query
     await q.answer()
     
@@ -950,7 +913,6 @@ async def confirm_add_professor(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return ConversationHandler.END
     
-    # پاک کردن context قبلی و ذخیره نام
     context.user_data.clear()
     context.user_data["new_prof_name"] = name
     
@@ -972,7 +934,8 @@ async def student_receive_course(update: Update, context: ContextTypes.DEFAULT_T
     context.user_data["new_prof_course"] = course
     await update.message.reply_text(
         "🏛 نام دانشگاه را وارد کنید.\n\n"
-        "اگر دانشگاه مشخص نیست، «ندارم» را بنویسید."
+        "اگر دانشگاه مشخص نیست، «ندارم» را بنویسید.\n\n"
+        "برای لغو /cancel را ارسال کنید."
     )
     return ADD_UNIVERSITY
 
@@ -1841,18 +1804,12 @@ async def cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.exception("Unhandled Telegram error.", exc_info=context.error)
 
-# ====================================================
-# تابع پاک کردن دیتابیس و استخراج اساتید خواجه نصیر
-# ====================================================
-
 def reset_and_extract_kntu_professors():
-    """پاک کردن دیتابیس و استخراج فقط اساتید خواجه نصیر"""
     import json
     import re
     
     logger.info("🗑️ در حال پاک کردن دیتابیس قدیمی...")
     
-    # پاک کردن دیتابیس
     if os.path.exists(DATABASE_PATH):
         try:
             os.remove(DATABASE_PATH)
@@ -1861,11 +1818,9 @@ def reset_and_extract_kntu_professors():
             logger.error(f"❌ خطا در پاک کردن دیتابیس: {e}")
             return
     
-    # ایجاد دیتابیس جدید
     init_database()
     logger.info("✅ دیتابیس جدید ساخته شد!")
     
-    # استخراج اساتید خواجه نصیر
     json_path = "result.json"
     
     if not os.path.exists(json_path):
@@ -1889,14 +1844,12 @@ def reset_and_extract_kntu_professors():
     
     logger.info(f"📊 {total_messages} پیام در فایل وجود دارد")
     
-    # مجموعه برای جلوگیری از تکراری شدن
     processed_names = set()
     
     for msg in data.get('messages', []):
         if msg.get('type') != 'message':
             continue
         
-        # استخراج متن
         text = msg.get('text', '')
         if isinstance(text, list):
             full_text = ''
@@ -1910,7 +1863,6 @@ def reset_and_extract_kntu_professors():
         if not text:
             continue
         
-        # الگوی اصلی: "▫️نام استاد | دانشکده"
         pattern = r'▫️([^|]+)\s*[|]\s*([^\n]+)'
         match = re.search(pattern, text)
         
@@ -1921,7 +1873,6 @@ def reset_and_extract_kntu_professors():
             name = normalize_text(match.group(1).strip())
             faculty = normalize_text(match.group(2).strip())
         
-        # الگوی جایگزین: "نام استاد | دانشکده" (بدون ▫️)
         if not match:
             pattern2 = r'([^|]+)\s*[|]\s*([^\n]+)'
             match2 = re.search(pattern2, text)
@@ -1932,13 +1883,11 @@ def reset_and_extract_kntu_professors():
         if not name:
             continue
         
-        # پاکسازی اسم
         name = re.sub(r'[^\w\s\u0600-\u06FF]', '', name).strip()
         
         if not name or len(name) < 2 or name in processed_names:
             continue
         
-        # بررسی تکراری بودن در دیتابیس
         cursor.execute(
             "SELECT id FROM professors WHERE LOWER(name) = LOWER(?)",
             (name,)
@@ -1950,7 +1899,6 @@ def reset_and_extract_kntu_professors():
             processed_names.add(name)
             continue
         
-        # اضافه کردن استاد
         try:
             cursor.execute(
                 "INSERT INTO professors (name, course, university) VALUES (?, ?, ?)",
@@ -1979,17 +1927,12 @@ def reset_and_extract_kntu_professors():
     logger.info(f"✅ {added} استاد خواجه نصیر اضافه شد!")
     logger.info(f"⏭️ {skipped} استاد تکراری نادیده گرفته شد!")
     
-    # نمایش تعداد کل اساتید
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM professors")
     total = cursor.fetchone()[0]
     conn.close()
     logger.info(f"📊 تعداد کل اساتید در دیتابیس: {total}")
-
-# ====================================================
-# پایان توابع استخراج
-# ====================================================
 
 def build_telegram_application():
     if not BOT_TOKEN:
@@ -1998,12 +1941,10 @@ def build_telegram_application():
     if not ADMIN_IDS:
         logger.warning("ADMIN_IDS is empty. No user will have admin access.")
     
-    # ===== پاک کردن دیتابیس و استخراج اساتید خواجه نصیر =====
     try:
         reset_and_extract_kntu_professors()
     except Exception as e:
         logger.error(f"❌ خطا در استخراج اساتید: {e}")
-    # ===== پایان بخش استخراج =====
     
     telegram_app = Application.builder().token(BOT_TOKEN).build()
     
@@ -2102,7 +2043,6 @@ def build_telegram_application():
     telegram_app.add_handler(CommandHandler("cancel", cancel))
     
     telegram_app.add_handler(CallbackQueryHandler(main_menu, pattern=r"^main_menu$"))
-    telegram_app.add_handler(CallbackQueryHandler(suggest_add_from_search, pattern=r"^suggest_add$"))
     telegram_app.add_handler(CallbackQueryHandler(confirm_add_professor, pattern=r"^confirm_add_professor$"))
     telegram_app.add_handler(CallbackQueryHandler(admin_panel, pattern=r"^admin_panel$"))
     telegram_app.add_handler(CallbackQueryHandler(pending_requests, pattern=r"^pending_requests(?::\d+)?$"))
