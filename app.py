@@ -1,13 +1,12 @@
 import os
-import threading
 import logging
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ConversationHandler, MessageHandler, ContextTypes, filters
 import sqlite3
-from datetime import datetime
 from html import escape
+import asyncio
 
 app = Flask(__name__)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -15,7 +14,6 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 logger = logging.getLogger(__name__)
 
-# ==================== تنظیمات ادمین ====================
 def get_admin_ids():
     raw = os.environ.get("ADMIN_IDS", "")
     ids = []
@@ -27,7 +25,6 @@ def get_admin_ids():
 
 ADMIN_IDS = get_admin_ids()
 
-# ==================== دیتابیس ====================
 DATABASE_PATH = "ostad_bot.db"
 
 def get_connection():
@@ -250,7 +247,6 @@ def reject_request(request_id):
     finally:
         con.close()
 
-# ==================== هندلرهای بات ====================
 ADD_NAME, ADD_COURSE, RATING_SCORE, RATING_COMMENT, PROFESSOR_CODE, ADMIN_ADD_NAME, ADMIN_ADD_COURSE = range(1, 8)
 PENDING_PAGE_SIZE = 5
 
@@ -823,8 +819,7 @@ async def cancel_callback(update, context):
         )
     return ConversationHandler.END
 
-# ==================== راه‌اندازی بات ====================
-def run_bot():
+async def run_bot():
     init_database()
     telegram_app = Application.builder().token(BOT_TOKEN).build()
 
@@ -883,9 +878,8 @@ def run_bot():
     telegram_app.add_handler(CallbackQueryHandler(request_action, pattern=r"^(approve|reject):\d+$"))
 
     logger.info("🤖 Telegram Ostad Bot is running...")
-    telegram_app.run_polling()
+    await telegram_app.run_polling()
 
-# ==================== Flask برای Render ====================
 @app.route('/')
 def home():
     return "✅ Telegram Ostad Bot is running!"
@@ -894,10 +888,10 @@ def home():
 def health():
     return "OK"
 
-# ==================== اجرا ====================
 if __name__ == "__main__":
-    bot_thread = threading.Thread(target=run_bot, daemon=True)
-    bot_thread.start()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(run_bot())
     
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
