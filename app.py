@@ -562,6 +562,22 @@ def get_pending_requests_count():
     finally:
         con.close()
 
+def get_user_pending_request(user_id):
+    con = get_connection()
+    try:
+        return con.execute(
+            """
+            SELECT *
+            FROM professor_requests
+            WHERE requester_id = ?
+              AND status = 'pending'
+            LIMIT 1
+            """,
+            (user_id,),
+        ).fetchone()
+    finally:
+        con.close()
+
 def approve_request(request_id):
     con = get_connection()
     try:
@@ -845,8 +861,24 @@ async def receive_search_name(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def student_add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
+    user_id = q.from_user.id
     await q.answer()
     context.user_data.clear()
+    
+    pending_request = get_user_pending_request(user_id)
+    if pending_request:
+        await q.edit_message_text(
+            "⚠️ <b>شما یک درخواست در انتظار بررسی دارید!</b>\n\n"
+            f"👤 استاد: <b>{escape(pending_request['name'])}</b>\n"
+            f"📚 درس: <b>{escape(pending_request['course'] or 'ثبت نشده')}</b>\n"
+            f"🏛 دانشگاه: <b>{escape(pending_request['university'] or 'ثبت نشده')}</b>\n\n"
+            "تا زمانی که درخواست قبلی شما توسط ادمین بررسی نشود، نمی‌توانید درخواست جدیدی ثبت کنید.\n"
+            "پس از تأیید یا رد درخواست، می‌توانید دوباره اقدام کنید.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=home_keyboard(user_id),
+        )
+        return ConversationHandler.END
+    
     await q.edit_message_text(
         "➕ <b>پیشنهاد استاد جدید</b>\n\n"
         "نام و نام خانوادگی استاد را وارد کنید.\n\n"
@@ -856,6 +888,19 @@ async def student_add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ADD_NAME
 
 async def student_receive_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    pending_request = get_user_pending_request(user_id)
+    if pending_request:
+        await update.message.reply_text(
+            "⚠️ <b>شما یک درخواست در انتظار بررسی دارید!</b>\n\n"
+            "تا زمانی که درخواست قبلی شما توسط ادمین بررسی نشود، نمی‌توانید درخواست جدیدی ثبت کنید.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=home_keyboard(user_id),
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
+    
     name = normalize_text(update.message.text)
     if not name or len(name) < 2:
         await update.message.reply_text(
@@ -903,13 +948,25 @@ async def student_receive_name(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def confirm_add_professor(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
+    user_id = q.from_user.id
     await q.answer()
+    
+    pending_request = get_user_pending_request(user_id)
+    if pending_request:
+        await q.edit_message_text(
+            "⚠️ <b>شما یک درخواست در انتظار بررسی دارید!</b>\n\n"
+            "تا زمانی که درخواست قبلی شما توسط ادمین بررسی نشود، نمی‌توانید درخواست جدیدی ثبت کنید.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=home_keyboard(user_id),
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
     
     name = context.user_data.get("pending_prof_name")
     if not name:
         await q.edit_message_text(
             "❌ اطلاعات ناقص است. لطفاً دوباره تلاش کنید.",
-            reply_markup=home_keyboard(q.from_user.id),
+            reply_markup=home_keyboard(user_id),
         )
         return ConversationHandler.END
     
@@ -927,6 +984,18 @@ async def confirm_add_professor(update: Update, context: ContextTypes.DEFAULT_TY
     return ADD_COURSE
 
 async def student_receive_course(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    pending_request = get_user_pending_request(user_id)
+    if pending_request:
+        await update.message.reply_text(
+            "⚠️ <b>شما یک درخواست در انتظار بررسی دارید!</b>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=home_keyboard(user_id),
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
+    
     course = normalize_text(update.message.text)
     if course in {"ندارم", "ندارد", "-", "ندارم.", "ندارم "}:
         course = None
@@ -940,6 +1009,18 @@ async def student_receive_course(update: Update, context: ContextTypes.DEFAULT_T
     return ADD_UNIVERSITY
 
 async def student_receive_university(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    pending_request = get_user_pending_request(user_id)
+    if pending_request:
+        await update.message.reply_text(
+            "⚠️ <b>شما یک درخواست در انتظار بررسی دارید!</b>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=home_keyboard(user_id),
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
+    
     university = normalize_text(update.message.text)
     if university in {"ندارم", "ندارد", "-", "ندارم.", "ندارم "}:
         university = None
@@ -947,13 +1028,24 @@ async def student_receive_university(update: Update, context: ContextTypes.DEFAU
     return await finish_student_request(update, context, university)
 
 async def finish_student_request(update: Update, context: ContextTypes.DEFAULT_TYPE, university):
+    user_id = update.effective_user.id
     name = context.user_data.get("new_prof_name")
     course = context.user_data.get("new_prof_course")
     
     if not name:
         await update.message.reply_text(
             "❌ اطلاعات درخواست ناقص است.",
-            reply_markup=home_keyboard(update.effective_user.id),
+            reply_markup=home_keyboard(user_id),
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
+    
+    pending_request = get_user_pending_request(user_id)
+    if pending_request:
+        await update.message.reply_text(
+            "⚠️ <b>شما یک درخواست در انتظار بررسی دارید!</b>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=home_keyboard(user_id),
         )
         context.user_data.clear()
         return ConversationHandler.END
@@ -963,29 +1055,40 @@ async def finish_student_request(update: Update, context: ContextTypes.DEFAULT_T
             name,
             course,
             university,
-            update.effective_user.id,
+            user_id,
         )
-        await notify_admins_new_request(context)
+        await notify_admins_new_request(context, request_id)
         await update.message.reply_text(
             "✅ <b>درخواست شما ثبت شد.</b>\n\n"
-            "درخواست پس از بررسی ادمین در لیست اساتید قرار می‌گیرد.",
+            "درخواست پس از بررسی ادمین در لیست اساتید قرار می‌گیرد.\n\n"
+            "⚠️ تا زمانی که این درخواست بررسی نشود، نمی‌توانید درخواست جدیدی ثبت کنید.",
             parse_mode=ParseMode.HTML,
-            reply_markup=home_keyboard(update.effective_user.id),
+            reply_markup=home_keyboard(user_id),
         )
     except Exception:
         logger.exception("Could not finish student request.")
         await update.message.reply_text(
             "❌ ثبت درخواست انجام نشد.\n"
             "لطفاً دوباره تلاش کنید.",
-            reply_markup=home_keyboard(update.effective_user.id),
+            reply_markup=home_keyboard(user_id),
         )
     context.user_data.clear()
     return ConversationHandler.END
 
-async def notify_admins_new_request(context: ContextTypes.DEFAULT_TYPE):
+async def notify_admins_new_request(context: ContextTypes.DEFAULT_TYPE, request_id):
+    request = get_request(request_id)
+    if not request:
+        return
+    
     pending_count = get_pending_requests_count()
+    
     text = (
         f"📨 <b>درخواست جدید استاد ثبت شد!</b>\n\n"
+        f"🆔 درخواست: <code>{request['id']}</code>\n"
+        f"👤 نام: <b>{escape(request['name'])}</b>\n"
+        f"📚 درس: <b>{escape(request['course'] or 'ثبت نشده')}</b>\n"
+        f"🏛 دانشگاه: <b>{escape(request['university'] or 'ثبت نشده')}</b>\n"
+        f"👨‍🎓 شناسه درخواست‌دهنده: <code>{request['requester_id']}</code>\n\n"
         f"تعداد درخواست‌های در انتظار: <b>{pending_count}</b>\n\n"
         "برای مشاهده و بررسی، به بخش\n"
         "«درخواست‌های در انتظار» در پنل مدیریت بروید."
@@ -1335,7 +1438,8 @@ async def pending_requests(update: Update, context: ContextTypes.DEFAULT_TYPE, p
             f"🆔 <code>{request['id']}</code>\n"
             f"👤 <b>{escape(request['name'])}</b>\n"
             f"📚 {escape(request['course'] or 'ثبت نشده')}\n"
-            f"🏛 {escape(request['university'] or 'ثبت نشده')}\n\n"
+            f"🏛 {escape(request['university'] or 'ثبت نشده')}\n"
+            f"👨‍🎓 شناسه درخواست‌دهنده: <code>{request['requester_id']}</code>\n\n"
         )
         buttons.append(
             [
