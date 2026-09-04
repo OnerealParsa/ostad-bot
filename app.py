@@ -533,6 +533,20 @@ def get_pending_requests():
     finally:
         con.close()
 
+def get_pending_requests_count():
+    con = get_connection()
+    try:
+        result = con.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM professor_requests
+            WHERE status = 'pending'
+            """
+        ).fetchone()
+        return int(result["count"]) if result else 0
+    finally:
+        con.close()
+
 def approve_request(request_id):
     con = get_connection()
     try:
@@ -660,10 +674,14 @@ def main_menu_keyboard(user_id):
         ],
     ]
     if is_admin(user_id):
+        pending_count = get_pending_requests_count()
+        admin_button_text = f"🔐 پنل مدیریت"
+        if pending_count > 0:
+            admin_button_text = f"🔐 پنل مدیریت ({pending_count}📨)"
         rows.append(
             [
                 InlineKeyboardButton(
-                    "🔐 پنل مدیریت",
+                    admin_button_text,
                     callback_data="admin_panel",
                 )
             ]
@@ -683,6 +701,11 @@ def home_keyboard(user_id):
     )
 
 def admin_menu_keyboard():
+    pending_count = get_pending_requests_count()
+    requests_button_text = "📨 درخواست‌های در انتظار"
+    if pending_count > 0:
+        requests_button_text = f"📨 درخواست‌های در انتظار ({pending_count})"
+    
     return InlineKeyboardMarkup(
         [
             [
@@ -693,7 +716,7 @@ def admin_menu_keyboard():
             ],
             [
                 InlineKeyboardButton(
-                    "📨 درخواست‌های در انتظار",
+                    requests_button_text,
                     callback_data="pending_requests:0",
                 )
             ],
@@ -867,7 +890,7 @@ async def student_receive_name(update: Update, context: ContextTypes.DEFAULT_TYP
             text += "\n"
         
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📋 مشاهده لیست اساتید", callback_data="list_professors:0")],
+            [InlineKeyboardButton("🔍 جستجوی اساتید", callback_data="search_professor")],
             [InlineKeyboardButton("🏠 منوی اصلی", callback_data="main_menu")]
         ])
         await update.message.reply_text(
@@ -923,7 +946,8 @@ async def finish_student_request(update: Update, context: ContextTypes.DEFAULT_T
             university,
             update.effective_user.id,
         )
-        await notify_admins_about_request(context, request_id)
+        # فقط نوتیفیکیشن ساده به ادمین‌ها
+        await notify_admins_new_request(context)
         await update.message.reply_text(
             "✅ <b>درخواست شما ثبت شد.</b>\n\n"
             "درخواست پس از بررسی ادمین در لیست اساتید قرار می‌گیرد.",
@@ -940,27 +964,14 @@ async def finish_student_request(update: Update, context: ContextTypes.DEFAULT_T
     context.user_data.clear()
     return ConversationHandler.END
 
-async def notify_admins_about_request(context: ContextTypes.DEFAULT_TYPE, request_id):
-    request = get_request(request_id)
-    if not request:
-        return
-    
+async def notify_admins_new_request(context: ContextTypes.DEFAULT_TYPE):
+    """ارسال نوتیفیکیشن ساده به ادمین‌ها برای درخواست جدید"""
+    pending_count = get_pending_requests_count()
     text = (
-        "📨 <b>درخواست جدید استاد</b>\n\n"
-        f"🆔 درخواست: <code>{request['id']}</code>\n"
-        f"👤 نام: <b>{escape(request['name'])}</b>\n"
-        f"📚 درس: <b>{escape(request['course'] or 'ثبت نشده')}</b>\n"
-        f"🏛 دانشگاه: <b>{escape(request['university'] or 'ثبت نشده')}</b>\n"
-        f"👨‍🎓 شناسه درخواست‌دهنده: <code>{request['requester_id']}</code>"
-    )
-    
-    markup = InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton("✅ تأیید", callback_data=f"approve:{request_id}"),
-                InlineKeyboardButton("❌ رد", callback_data=f"reject:{request_id}"),
-            ]
-        ]
+        f"📨 <b>درخواست جدید استاد ثبت شد!</b>\n\n"
+        f"تعداد درخواست‌های در انتظار: <b>{pending_count}</b>\n\n"
+        "برای مشاهده و بررسی، به بخش\n"
+        "«درخواست‌های در انتظار» در پنل مدیریت بروید."
     )
     
     for admin_id in ADMIN_IDS:
@@ -969,7 +980,6 @@ async def notify_admins_about_request(context: ContextTypes.DEFAULT_TYPE, reques
                 chat_id=admin_id,
                 text=text,
                 parse_mode=ParseMode.HTML,
-                reply_markup=markup,
             )
         except Exception:
             logger.exception("Could not notify admin %s", admin_id)
