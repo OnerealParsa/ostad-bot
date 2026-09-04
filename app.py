@@ -241,6 +241,24 @@ def get_professor_by_id(professor_id):
     finally:
         con.close()
 
+def get_professor_by_code(code):
+    code = normalize_text(code)
+    if not code:
+        return None
+    con = get_connection()
+    try:
+        return con.execute(
+            """
+            SELECT *
+            FROM professors
+            WHERE UPPER(code) = UPPER(?)
+            LIMIT 1
+            """,
+            (code,),
+        ).fetchone()
+    finally:
+        con.close()
+
 def get_all_professors():
     con = get_connection()
     try:
@@ -261,7 +279,6 @@ def search_professors_by_name(search_term):
     
     con = get_connection()
     try:
-        # جستجوی دقیق با LIKE
         exact_matches = con.execute(
             """
             SELECT *
@@ -273,7 +290,6 @@ def search_professors_by_name(search_term):
             (f"%{search_term}%",),
         ).fetchall()
         
-        # اگر نتیجه‌ای پیدا نشد، از similarity استفاده کن
         if not exact_matches:
             all_professors = con.execute(
                 """
@@ -283,7 +299,6 @@ def search_professors_by_name(search_term):
                 """
             ).fetchall()
             
-            # استخراج نام‌ها برای similarity
             names = [p["name"] for p in all_professors]
             close_matches = get_close_matches(search_term, names, n=5, cutoff=0.4)
             
@@ -784,7 +799,6 @@ async def receive_search_name(update: Update, context: ContextTypes.DEFAULT_TYPE
     results = search_professors_by_name(search_term)
     
     if not results:
-        # پیشنهاد افزودن استاد جدید
         context.user_data["suggested_name"] = search_term
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("➕ پیشنهاد افزودن این استاد", callback_data="suggest_add")],
@@ -800,11 +814,10 @@ async def receive_search_name(update: Update, context: ContextTypes.DEFAULT_TYPE
         context.user_data.clear()
         return ConversationHandler.END
     
-    # نمایش نتایج جستجو
     text = "🔍 <b>نتایج جستجو</b>\n\n"
     buttons = []
     
-    for professor in results[:5]:  # حداکثر ۵ نتیجه
+    for professor in results[:5]:
         name = escape(professor["name"])
         course = escape(professor["course"] or "درس ثبت نشده")
         university = escape(professor["university"] or "دانشگاه ثبت نشده")
@@ -836,7 +849,6 @@ async def suggest_add_from_search(update: Update, context: ContextTypes.DEFAULT_
     q = update.callback_query
     await q.answer()
     
-    # گرفتن نام از context
     name = context.user_data.get("suggested_name")
     if not name:
         await q.edit_message_text(
@@ -877,7 +889,6 @@ async def student_receive_name(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return ADD_NAME
     
-    # بررسی وجود استاد
     existing = search_professors_by_name(name)
     if existing:
         text = "⚠️ <b>این استاد قبلاً ثبت شده است:</b>\n\n"
@@ -946,7 +957,6 @@ async def finish_student_request(update: Update, context: ContextTypes.DEFAULT_T
             university,
             update.effective_user.id,
         )
-        # فقط نوتیفیکیشن ساده به ادمین‌ها
         await notify_admins_new_request(context)
         await update.message.reply_text(
             "✅ <b>درخواست شما ثبت شد.</b>\n\n"
@@ -965,7 +975,6 @@ async def finish_student_request(update: Update, context: ContextTypes.DEFAULT_T
     return ConversationHandler.END
 
 async def notify_admins_new_request(context: ContextTypes.DEFAULT_TYPE):
-    """ارسال نوتیفیکیشن ساده به ادمین‌ها برای درخواست جدید"""
     pending_count = get_pending_requests_count()
     text = (
         f"📨 <b>درخواست جدید استاد ثبت شد!</b>\n\n"
@@ -1787,6 +1796,171 @@ async def cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.exception("Unhandled Telegram error.", exc_info=context.error)
 
+# ====================================================
+# تابع استخراج اساتید از فایل JSON
+# ====================================================
+
+def extract_and_add_professors():
+    """استخراج اساتید از فایل JSON و اضافه به دیتابیس"""
+    import json
+    import re
+    
+    json_path = "result.json"
+    
+    if not os.path.exists(json_path):
+        logger.info("ℹ️ فایل result.json پیدا نشد. اساتید جدیدی اضافه نمی‌شود.")
+        return
+    
+    logger.info("🔄 در حال استخراج اساتید از فایل JSON...")
+    
+    try:
+        with open(json_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception as e:
+        logger.error(f"❌ خطا در خواندن فایل JSON: {e}")
+        return
+    
+    conn = get_connection()
+    cursor = conn.cursor()
+    added = 0
+    skipped = 0
+    total_messages = len(data.get('messages', []))
+    
+    logger.info(f"📊 {total_messages} پیام در فایل وجود دارد")
+    
+    # مجموعه برای جلوگیری از تکراری شدن
+    processed_names = set()
+    
+    for msg in data.get('messages', []):
+        if msg.get('type') != 'message':
+            continue
+        
+        # استخراج متن
+        text = msg.get('text', '')
+        if isinstance(text, list):
+            full_text = ''
+            for item in text:
+                if isinstance(item, dict):
+                    full_text += item.get('text', '')
+                else:
+                    full_text += str(item)
+            text = full_text
+        
+        if not text or len(text) < 10:
+            continue
+        
+        # فقط پیام‌هایی که درباره استاد هستند
+        if 'استاد' not in text and '💫' not in text and '🚬' not in text:
+            continue
+        
+        # استخراج اسم استاد
+        lines = text.split('\n')
+        name = None
+        
+        # الگوهای مختلف برای پیدا کردن استاد
+        for line in lines:
+            line = line.strip()
+            patterns = [
+                r'استاد\s*[:]\s*([^\n]+)',
+                r'💫استاد\s*[:]\s*([^\n]+)',
+                r'🚬استاد\s*[:]\s*([^\n]+)',
+                r'استاد\s*:\s*([^\n]+)',
+                r'💫استاد\s*([^\n]+)',
+                r'🚬استاد\s*([^\n]+)',
+                r'استاد\s+([^\n]+)',
+            ]
+            
+            for pattern in patterns:
+                match = re.search(pattern, line)
+                if match:
+                    potential_name = match.group(1).strip()
+                    # پاکسازی اسم
+                    potential_name = re.sub(r'[^\w\s\u0600-\u06FF]', '', potential_name)
+                    potential_name = re.sub(r'\s+', ' ', potential_name).strip()
+                    
+                    # حذف کلمات اضافی
+                    potential_name = potential_name.replace('دکتر', '').replace('دكتر', '').strip()
+                    
+                    if potential_name and len(potential_name) > 2 and not potential_name.startswith('?'):
+                        name = potential_name
+                        break
+            if name:
+                break
+        
+        if not name or name in processed_names:
+            continue
+        
+        # استخراج درس از هشتگ‌ها
+        course = None
+        hashtags = re.findall(r'#([^\s]+)', text)
+        
+        # لیست هشتگ‌های بی‌ربط
+        irrelevant_tags = ['درس', 'سوال', 'ارسالی', 'کتاب', 'فروش', 'خرید', 'ورزش', 
+                          'فیزیک', 'ریاضی', 'زیبایی', 'پست', 'موقت', 'جدید', 'فان',
+                          'فوری', 'مهم', 'به', 'وقت', 'اطلاعیه', 'جزئیات']
+        
+        for tag in hashtags:
+            if tag in irrelevant_tags:
+                continue
+            if len(tag) > 2 and not tag.startswith('فان'):
+                # بررسی فارسی بودن
+                if re.search(r'[\u0600-\u06FF]', tag):
+                    course = normalize_text(tag.replace('_', ' '))
+                    break
+        
+        # بررسی تکراری بودن در دیتابیس
+        cursor.execute(
+            "SELECT id FROM professors WHERE LOWER(name) = LOWER(?)",
+            (name,)
+        )
+        existing = cursor.fetchone()
+        
+        if existing:
+            skipped += 1
+            processed_names.add(name)
+            continue
+        
+        # اضافه کردن استاد
+        try:
+            cursor.execute(
+                "INSERT INTO professors (name, course, university) VALUES (?, ?, ?)",
+                (name, course or 'ثبت نشده', 'دانشگاه بوعلی سینا')
+            )
+            professor_id = cursor.lastrowid
+            
+            cursor.execute(
+                "UPDATE professors SET code = ? WHERE id = ?",
+                (generate_professor_code(professor_id), professor_id)
+            )
+            
+            added += 1
+            processed_names.add(name)
+            
+            if added % 10 == 0:
+                logger.info(f"   {added} استاد اضافه شد...")
+                
+        except Exception as e:
+            logger.error(f"⚠️ خطا در اضافه کردن {name}: {e}")
+            skipped += 1
+    
+    conn.commit()
+    conn.close()
+    
+    logger.info(f"✅ {added} استاد جدید از فایل JSON اضافه شد!")
+    logger.info(f"⏭️ {skipped} استاد تکراری نادیده گرفته شد!")
+    
+    # نمایش تعداد کل اساتید
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM professors")
+    total = cursor.fetchone()[0]
+    conn.close()
+    logger.info(f"📊 تعداد کل اساتید در دیتابیس: {total}")
+
+# ====================================================
+# پایان تابع استخراج اساتید
+# ====================================================
+
 def build_telegram_application():
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN environment variable is missing.")
@@ -1795,6 +1969,14 @@ def build_telegram_application():
         logger.warning("ADMIN_IDS is empty. No user will have admin access.")
     
     init_database()
+    
+    # ===== استخراج اساتید از فایل JSON =====
+    try:
+        extract_and_add_professors()
+    except Exception as e:
+        logger.error(f"❌ خطا در استخراج اساتید: {e}")
+    # ===== پایان بخش استخراج =====
+    
     telegram_app = Application.builder().token(BOT_TOKEN).build()
     
     search_conv = ConversationHandler(
@@ -1912,6 +2094,9 @@ async def run_bot_async():
         logger.info("BOT_TOKEN loaded: %s", bool(BOT_TOKEN))
         logger.info("ADMIN_IDS loaded: %s", ADMIN_IDS)
         logger.info("📚 Database: %s", DATABASE_PATH)
+        logger.info("💬 Maximum comment words: %s", MAX_COMMENT_WORDS)
+        logger.info("📋 Professor page size: %s", PROFESSOR_PAGE_SIZE)
+        logger.info("💬 Comment page size: %s", COMMENT_PAGE_SIZE)
         
         await telegram_app.initialize()
         await telegram_app.start()
