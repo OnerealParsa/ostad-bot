@@ -1797,21 +1797,37 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.exception("Unhandled Telegram error.", exc_info=context.error)
 
 # ====================================================
-# تابع استخراج اساتید از فایل JSON
+# تابع پاک کردن دیتابیس و استخراج اساتید خواجه نصیر
 # ====================================================
 
-def extract_and_add_professors():
-    """استخراج اساتید از فایل JSON و اضافه به دیتابیس"""
+def reset_and_extract_kntu_professors():
+    """پاک کردن دیتابیس و استخراج فقط اساتید خواجه نصیر"""
     import json
     import re
     
+    logger.info("🗑️ در حال پاک کردن دیتابیس قدیمی...")
+    
+    # پاک کردن دیتابیس
+    if os.path.exists(DATABASE_PATH):
+        try:
+            os.remove(DATABASE_PATH)
+            logger.info("✅ دیتابیس قدیمی پاک شد!")
+        except Exception as e:
+            logger.error(f"❌ خطا در پاک کردن دیتابیس: {e}")
+            return
+    
+    # ایجاد دیتابیس جدید
+    init_database()
+    logger.info("✅ دیتابیس جدید ساخته شد!")
+    
+    # استخراج اساتید خواجه نصیر
     json_path = "result.json"
     
     if not os.path.exists(json_path):
-        logger.info("ℹ️ فایل result.json پیدا نشد. اساتید جدیدی اضافه نمی‌شود.")
+        logger.info("ℹ️ فایل result.json پیدا نشد. اساتیدی اضافه نمی‌شود.")
         return
     
-    logger.info("🔄 در حال استخراج اساتید از فایل JSON...")
+    logger.info("🔄 در حال استخراج اساتید خواجه نصیر از فایل JSON...")
     
     try:
         with open(json_path, 'r', encoding='utf-8') as f:
@@ -1846,67 +1862,36 @@ def extract_and_add_professors():
                     full_text += str(item)
             text = full_text
         
-        if not text or len(text) < 10:
+        if not text:
             continue
         
-        # فقط پیام‌هایی که درباره استاد هستند
-        if 'استاد' not in text and '💫' not in text and '🚬' not in text:
-            continue
+        # الگوی اصلی: "▫️نام استاد | دانشکده"
+        pattern = r'▫️([^|]+)\s*[|]\s*([^\n]+)'
+        match = re.search(pattern, text)
         
-        # استخراج اسم استاد
-        lines = text.split('\n')
         name = None
+        faculty = None
         
-        # الگوهای مختلف برای پیدا کردن استاد
-        for line in lines:
-            line = line.strip()
-            patterns = [
-                r'استاد\s*[:]\s*([^\n]+)',
-                r'💫استاد\s*[:]\s*([^\n]+)',
-                r'🚬استاد\s*[:]\s*([^\n]+)',
-                r'استاد\s*:\s*([^\n]+)',
-                r'💫استاد\s*([^\n]+)',
-                r'🚬استاد\s*([^\n]+)',
-                r'استاد\s+([^\n]+)',
-            ]
-            
-            for pattern in patterns:
-                match = re.search(pattern, line)
-                if match:
-                    potential_name = match.group(1).strip()
-                    # پاکسازی اسم
-                    potential_name = re.sub(r'[^\w\s\u0600-\u06FF]', '', potential_name)
-                    potential_name = re.sub(r'\s+', ' ', potential_name).strip()
-                    
-                    # حذف کلمات اضافی
-                    potential_name = potential_name.replace('دکتر', '').replace('دكتر', '').strip()
-                    
-                    if potential_name and len(potential_name) > 2 and not potential_name.startswith('?'):
-                        name = potential_name
-                        break
-            if name:
-                break
+        if match:
+            name = normalize_text(match.group(1).strip())
+            faculty = normalize_text(match.group(2).strip())
         
-        if not name or name in processed_names:
+        # الگوی جایگزین: "نام استاد | دانشکده" (بدون ▫️)
+        if not match:
+            pattern2 = r'([^|]+)\s*[|]\s*([^\n]+)'
+            match2 = re.search(pattern2, text)
+            if match2:
+                name = normalize_text(match2.group(1).strip())
+                faculty = normalize_text(match2.group(2).strip())
+        
+        if not name:
             continue
         
-        # استخراج درس از هشتگ‌ها
-        course = None
-        hashtags = re.findall(r'#([^\s]+)', text)
+        # پاکسازی اسم
+        name = re.sub(r'[^\w\s\u0600-\u06FF]', '', name).strip()
         
-        # لیست هشتگ‌های بی‌ربط
-        irrelevant_tags = ['درس', 'سوال', 'ارسالی', 'کتاب', 'فروش', 'خرید', 'ورزش', 
-                          'فیزیک', 'ریاضی', 'زیبایی', 'پست', 'موقت', 'جدید', 'فان',
-                          'فوری', 'مهم', 'به', 'وقت', 'اطلاعیه', 'جزئیات']
-        
-        for tag in hashtags:
-            if tag in irrelevant_tags:
-                continue
-            if len(tag) > 2 and not tag.startswith('فان'):
-                # بررسی فارسی بودن
-                if re.search(r'[\u0600-\u06FF]', tag):
-                    course = normalize_text(tag.replace('_', ' '))
-                    break
+        if not name or len(name) < 2 or name in processed_names:
+            continue
         
         # بررسی تکراری بودن در دیتابیس
         cursor.execute(
@@ -1924,7 +1909,7 @@ def extract_and_add_professors():
         try:
             cursor.execute(
                 "INSERT INTO professors (name, course, university) VALUES (?, ?, ?)",
-                (name, course or 'ثبت نشده', 'دانشگاه بوعلی سینا')
+                (name, faculty or 'ثبت نشده', 'دانشگاه خواجه نصیر')
             )
             professor_id = cursor.lastrowid
             
@@ -1946,7 +1931,7 @@ def extract_and_add_professors():
     conn.commit()
     conn.close()
     
-    logger.info(f"✅ {added} استاد جدید از فایل JSON اضافه شد!")
+    logger.info(f"✅ {added} استاد خواجه نصیر اضافه شد!")
     logger.info(f"⏭️ {skipped} استاد تکراری نادیده گرفته شد!")
     
     # نمایش تعداد کل اساتید
@@ -1958,7 +1943,7 @@ def extract_and_add_professors():
     logger.info(f"📊 تعداد کل اساتید در دیتابیس: {total}")
 
 # ====================================================
-# پایان تابع استخراج اساتید
+# پایان توابع استخراج
 # ====================================================
 
 def build_telegram_application():
@@ -1968,11 +1953,9 @@ def build_telegram_application():
     if not ADMIN_IDS:
         logger.warning("ADMIN_IDS is empty. No user will have admin access.")
     
-    init_database()
-    
-    # ===== استخراج اساتید از فایل JSON =====
+    # ===== پاک کردن دیتابیس و استخراج اساتید خواجه نصیر =====
     try:
-        extract_and_add_professors()
+        reset_and_extract_kntu_professors()
     except Exception as e:
         logger.error(f"❌ خطا در استخراج اساتید: {e}")
     # ===== پایان بخش استخراج =====
