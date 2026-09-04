@@ -7,6 +7,7 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Conv
 import sqlite3
 from html import escape
 import asyncio
+import threading
 
 app = Flask(__name__)
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -819,67 +820,87 @@ async def cancel_callback(update, context):
         )
     return ConversationHandler.END
 
-async def run_bot():
-    init_database()
-    telegram_app = Application.builder().token(BOT_TOKEN).build()
+# ==================== راه‌اندازی بات با روش جدید ====================
+def run_bot_sync():
+    """اجرای بات به صورت همزمان در ترد جداگانه"""
+    try:
+        # ایجاد event loop جدید برای این ترد
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        # مقداردهی اولیه دیتابیس
+        init_database()
+        
+        # ساخت اپلیکیشن
+        telegram_app = Application.builder().token(BOT_TOKEN).build()
 
-    student_add = ConversationHandler(
-        entry_points=[CallbackQueryHandler(student_add_start, pattern=r"^student_add$")],
-        states={
-            ADD_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, student_receive_name)],
-            ADD_COURSE: [MessageHandler(filters.TEXT & ~filters.COMMAND, student_receive_course), CallbackQueryHandler(student_skip_course, pattern=r"^student_skip_course$")],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-        per_chat=True, per_user=True,
-    )
-    code_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(enter_code_start, pattern=r"^enter_code$")],
-        states={PROFESSOR_CODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_code)]},
-        fallbacks=[CommandHandler("cancel", cancel)],
-        per_chat=True, per_user=True,
-    )
-    rating_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(rating_start, pattern=r"^rate:\d+$")],
-        states={
-            RATING_SCORE: [CallbackQueryHandler(select_score, pattern=r"^score:[1-5]$"), CallbackQueryHandler(cancel_callback, pattern=r"^cancel_rating$")],
-            RATING_COMMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_comment), CallbackQueryHandler(skip_comment, pattern=r"^skip_comment$"), CallbackQueryHandler(cancel_callback, pattern=r"^cancel_rating$")],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-        per_chat=True, per_user=True,
-    )
-    admin_add = ConversationHandler(
-        entry_points=[CallbackQueryHandler(admin_add_start, pattern=r"^admin_add$")],
-        states={
-            ADMIN_ADD_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_receive_name)],
-            ADMIN_ADD_COURSE: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_receive_course), CallbackQueryHandler(admin_skip_course, pattern=r"^admin_skip_course$")],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-        per_chat=True, per_user=True,
-    )
+        # ثبت هندلرها
+        student_add = ConversationHandler(
+            entry_points=[CallbackQueryHandler(student_add_start, pattern=r"^student_add$")],
+            states={
+                ADD_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, student_receive_name)],
+                ADD_COURSE: [MessageHandler(filters.TEXT & ~filters.COMMAND, student_receive_course), CallbackQueryHandler(student_skip_course, pattern=r"^student_skip_course$")],
+            },
+            fallbacks=[CommandHandler("cancel", cancel)],
+            per_chat=True, per_user=True,
+        )
+        code_conv = ConversationHandler(
+            entry_points=[CallbackQueryHandler(enter_code_start, pattern=r"^enter_code$")],
+            states={PROFESSOR_CODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_code)]},
+            fallbacks=[CommandHandler("cancel", cancel)],
+            per_chat=True, per_user=True,
+        )
+        rating_conv = ConversationHandler(
+            entry_points=[CallbackQueryHandler(rating_start, pattern=r"^rate:\d+$")],
+            states={
+                RATING_SCORE: [CallbackQueryHandler(select_score, pattern=r"^score:[1-5]$"), CallbackQueryHandler(cancel_callback, pattern=r"^cancel_rating$")],
+                RATING_COMMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_comment), CallbackQueryHandler(skip_comment, pattern=r"^skip_comment$"), CallbackQueryHandler(cancel_callback, pattern=r"^cancel_rating$")],
+            },
+            fallbacks=[CommandHandler("cancel", cancel)],
+            per_chat=True, per_user=True,
+        )
+        admin_add = ConversationHandler(
+            entry_points=[CallbackQueryHandler(admin_add_start, pattern=r"^admin_add$")],
+            states={
+                ADMIN_ADD_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_receive_name)],
+                ADMIN_ADD_COURSE: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_receive_course), CallbackQueryHandler(admin_skip_course, pattern=r"^admin_skip_course$")],
+            },
+            fallbacks=[CommandHandler("cancel", cancel)],
+            per_chat=True, per_user=True,
+        )
 
-    for h in (student_add, code_conv, rating_conv, admin_add):
-        telegram_app.add_handler(h)
+        for h in (student_add, code_conv, rating_conv, admin_add):
+            telegram_app.add_handler(h)
 
-    telegram_app.add_handler(CommandHandler("start", start))
-    telegram_app.add_handler(CommandHandler("cancel", cancel))
+        telegram_app.add_handler(CommandHandler("start", start))
+        telegram_app.add_handler(CommandHandler("cancel", cancel))
 
-    telegram_app.add_handler(CallbackQueryHandler(main_menu, pattern=r"^main_menu$"))
-    telegram_app.add_handler(CallbackQueryHandler(list_professors, pattern=r"^list_professors$"))
-    telegram_app.add_handler(CallbackQueryHandler(view_professor, pattern=r"^view_prof:\d+$"))
+        telegram_app.add_handler(CallbackQueryHandler(main_menu, pattern=r"^main_menu$"))
+        telegram_app.add_handler(CallbackQueryHandler(list_professors, pattern=r"^list_professors$"))
+        telegram_app.add_handler(CallbackQueryHandler(view_professor, pattern=r"^view_prof:\d+$"))
 
-    telegram_app.add_handler(CallbackQueryHandler(admin_panel, pattern=r"^admin_panel$"))
-    telegram_app.add_handler(CallbackQueryHandler(pending_requests, pattern=r"^pending_requests$"))
-    telegram_app.add_handler(CallbackQueryHandler(pending_next, pattern=r"^pending_next$"))
-    telegram_app.add_handler(CallbackQueryHandler(pending_prev, pattern=r"^pending_prev$"))
-    telegram_app.add_handler(CallbackQueryHandler(manage_professors, pattern=r"^manage_professors$"))
-    telegram_app.add_handler(CallbackQueryHandler(admin_professor_details, pattern=r"^admin_prof:\d+$"))
-    telegram_app.add_handler(CallbackQueryHandler(delete_professor, pattern=r"^delete_prof:\d+$"))
-    telegram_app.add_handler(CallbackQueryHandler(confirm_delete, pattern=r"^confirm_delete:\d+$"))
-    telegram_app.add_handler(CallbackQueryHandler(request_action, pattern=r"^(approve|reject):\d+$"))
+        telegram_app.add_handler(CallbackQueryHandler(admin_panel, pattern=r"^admin_panel$"))
+        telegram_app.add_handler(CallbackQueryHandler(pending_requests, pattern=r"^pending_requests$"))
+        telegram_app.add_handler(CallbackQueryHandler(pending_next, pattern=r"^pending_next$"))
+        telegram_app.add_handler(CallbackQueryHandler(pending_prev, pattern=r"^pending_prev$"))
+        telegram_app.add_handler(CallbackQueryHandler(manage_professors, pattern=r"^manage_professors$"))
+        telegram_app.add_handler(CallbackQueryHandler(admin_professor_details, pattern=r"^admin_prof:\d+$"))
+        telegram_app.add_handler(CallbackQueryHandler(delete_professor, pattern=r"^delete_prof:\d+$"))
+        telegram_app.add_handler(CallbackQueryHandler(confirm_delete, pattern=r"^confirm_delete:\d+$"))
+        telegram_app.add_handler(CallbackQueryHandler(request_action, pattern=r"^(approve|reject):\d+$"))
 
-    logger.info("🤖 Telegram Ostad Bot is running...")
-    await telegram_app.run_polling()
+        logger.info("🤖 Telegram Ostad Bot is running...")
+        
+        # اجرای Polling در event loop
+        loop.run_until_complete(telegram_app.run_polling())
+        
+    except Exception as e:
+        logger.error(f"Bot error: {e}")
+    finally:
+        if 'loop' in locals() and loop.is_running():
+            loop.close()
 
+# ==================== Flask ====================
 @app.route('/')
 def home():
     return "✅ Telegram Ostad Bot is running!"
@@ -888,10 +909,12 @@ def home():
 def health():
     return "OK"
 
+# ==================== اجرا ====================
 if __name__ == "__main__":
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(run_bot())
+    # اجرای بات در ترد جداگانه
+    bot_thread = threading.Thread(target=run_bot_sync, daemon=True)
+    bot_thread.start()
     
+    # اجرای Flask
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
