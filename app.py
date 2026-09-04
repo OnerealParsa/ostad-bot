@@ -990,7 +990,7 @@ async def finish_student_request(update: Update, context: ContextTypes.DEFAULT_T
             university,
             user_id,
         )
-        await notify_admins_new_request(context, request_id)
+        
         await update.message.reply_text(
             "✅ <b>درخواست شما ثبت شد.</b>\n\n"
             "درخواست پس از بررسی ادمین در لیست اساتید قرار می‌گیرد.\n\n"
@@ -1007,35 +1007,6 @@ async def finish_student_request(update: Update, context: ContextTypes.DEFAULT_T
         )
     context.user_data.clear()
     return ConversationHandler.END
-
-async def notify_admins_new_request(context: ContextTypes.DEFAULT_TYPE, request_id):
-    request = get_request(request_id)
-    if not request:
-        return
-    
-    pending_count = get_pending_requests_count()
-    
-    text = (
-        f"📨 <b>درخواست جدید استاد ثبت شد!</b>\n\n"
-        f"🆔 درخواست: <code>{request['id']}</code>\n"
-        f"👤 نام: <b>{escape(request['name'])}</b>\n"
-        f"📚 درس: <b>{escape(request['course'] or 'ثبت نشده')}</b>\n"
-        f"🏛 دانشگاه: <b>{escape(request['university'] or 'ثبت نشده')}</b>\n"
-        f"👨‍🎓 شناسه درخواست‌دهنده: <code>{request['requester_id']}</code>\n\n"
-        f"تعداد درخواست‌های در انتظار: <b>{pending_count}</b>\n\n"
-        "برای مشاهده و بررسی، به بخش\n"
-        "«درخواست‌های در انتظار» در پنل مدیریت بروید."
-    )
-    
-    for admin_id in ADMIN_IDS:
-        try:
-            await context.bot.send_message(
-                chat_id=admin_id,
-                text=text,
-                parse_mode=ParseMode.HTML,
-            )
-        except Exception:
-            logger.exception("Could not notify admin %s", admin_id)
 
 async def rating_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
