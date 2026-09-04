@@ -4,7 +4,6 @@ import logging
 import sqlite3
 import threading
 from html import escape
-from difflib import get_close_matches
 
 from flask import Flask
 
@@ -30,7 +29,6 @@ COMMENT_PAGE_SIZE = 3
 PENDING_PAGE_SIZE = 5
 ADMIN_PROFESSOR_PAGE_SIZE = 5
 MAX_COMMENT_WORDS = 20
-SEARCH_SUGGESTIONS_COUNT = 5
 
 logging.basicConfig(
     level=logging.INFO,
@@ -98,7 +96,6 @@ def init_database():
                 code TEXT UNIQUE,
                 name TEXT NOT NULL UNIQUE,
                 course TEXT,
-                university TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """
@@ -109,7 +106,6 @@ def init_database():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
                 course TEXT,
-                university TEXT,
                 requester_id INTEGER NOT NULL,
                 status TEXT NOT NULL DEFAULT 'pending',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -140,12 +136,6 @@ def init_database():
         )
         cur.execute(
             """
-            CREATE INDEX IF NOT EXISTS idx_professors_university
-            ON professors(university)
-            """
-        )
-        cur.execute(
-            """
             CREATE INDEX IF NOT EXISTS idx_ratings_professor_id
             ON ratings(professor_id)
             """
@@ -170,10 +160,9 @@ def init_database():
     finally:
         con.close()
 
-def create_professor(name, course, university):
+def create_professor(name, course):
     name = normalize_text(name)
     course = normalize_text(course)
-    university = normalize_text(university)
     if not name:
         return None
     con = get_connection()
@@ -192,10 +181,10 @@ def create_professor(name, course, university):
             return int(existing["id"])
         cur.execute(
             """
-            INSERT INTO professors(name, course, university)
-            VALUES (?, ?, ?)
+            INSERT INTO professors(name, course)
+            VALUES (?, ?)
             """,
-            (name, course, university),
+            (name, course),
         )
         professor_id = int(cur.lastrowid)
         cur.execute(
@@ -276,57 +265,6 @@ def get_all_professors():
             ORDER BY name COLLATE NOCASE ASC, id ASC
             """
         ).fetchall()
-    finally:
-        con.close()
-
-def search_professors_by_name(query):
-    query = normalize_text(query)
-    if not query:
-        return []
-    con = get_connection()
-    try:
-        results = con.execute(
-            """
-            SELECT *
-            FROM professors
-            WHERE LOWER(name) LIKE LOWER(?)
-            ORDER BY 
-                CASE 
-                    WHEN LOWER(name) = LOWER(?) THEN 0
-                    WHEN LOWER(name) LIKE LOWER(? || ' %') THEN 1
-                    WHEN LOWER(name) LIKE LOWER('% ' || ?) THEN 2
-                    ELSE 3
-                END,
-                name COLLATE NOCASE ASC
-            LIMIT ?
-            """,
-            (f"%{query}%", query, query, query, SEARCH_SUGGESTIONS_COUNT),
-        ).fetchall()
-        if results:
-            return results
-        all_names = con.execute(
-            """
-            SELECT name
-            FROM professors
-            """
-        ).fetchall()
-        all_names = [row["name"] for row in all_names]
-        close_matches = get_close_matches(query, all_names, n=SEARCH_SUGGESTIONS_COUNT, cutoff=0.6)
-        if close_matches:
-            placeholders = ",".join("?" * len(close_matches))
-            return con.execute(
-                f"""
-                SELECT *
-                FROM professors
-                WHERE name IN ({placeholders})
-                ORDER BY 
-                    CASE name
-                        {''.join(f' WHEN ? THEN {i}' for i, _ in enumerate(close_matches))}
-                    END
-                """,
-                close_matches + close_matches,
-            ).fetchall()
-        return []
     finally:
         con.close()
 
@@ -494,10 +432,9 @@ def save_rating(professor_id, user_id, score, comment):
     finally:
         con.close()
 
-def create_professor_request(name, course, university, requester_id):
+def create_professor_request(name, course, requester_id):
     name = normalize_text(name)
     course = normalize_text(course)
-    university = normalize_text(university)
     if not name:
         raise ValueError("نام استاد الزامی است.")
     con = get_connection()
@@ -508,15 +445,13 @@ def create_professor_request(name, course, university, requester_id):
             INSERT INTO professor_requests(
                 name,
                 course,
-                university,
                 requester_id
             )
-            VALUES (?, ?, ?, ?)
+            VALUES (?, ?, ?)
             """,
             (
                 name,
                 course,
-                university,
                 requester_id,
             ),
         )
@@ -597,13 +532,12 @@ def approve_request(request_id):
             return int(existing["id"])
         cur.execute(
             """
-            INSERT INTO professors(name, course, university)
-            VALUES (?, ?, ?)
+            INSERT INTO professors(name, course)
+            VALUES (?, ?)
             """,
             (
                 request["name"],
                 request["course"],
-                request["university"],
             ),
         )
         professor_id = int(cur.lastrowid)
@@ -660,22 +594,25 @@ def reject_request(request_id):
 (
     ADD_NAME,
     ADD_COURSE,
-    ADD_UNIVERSITY,
     RATING_SCORE,
     RATING_COMMENT,
-    SEARCH_NAME,
-    SEARCH_RESULTS,
+    PROFESSOR_CODE,
     ADMIN_ADD_NAME,
     ADMIN_ADD_COURSE,
-    ADMIN_ADD_UNIVERSITY,
-) = range(1, 11)
+) = range(1, 8)
 
 def main_menu_keyboard(user_id):
     rows = [
         [
             InlineKeyboardButton(
-                "🔍 جستجوی اساتید",
-                callback_data="search_professors",
+                "📋 لیست اساتید",
+                callback_data="list_professors:0",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🔢 ورود کد استاد",
+                callback_data="enter_code",
             )
         ],
         [
@@ -764,259 +701,172 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=main_menu_keyboard(user_id),
     )
 
-async def search_professors_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def list_professors(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     q = update.callback_query
     await q.answer()
-    context.user_data.clear()
-    await q.edit_message_text(
-        "🔍 <b>جستجوی اساتید</b>\n\n"
-        "نام استاد را وارد کنید.\n\n"
-        "برای لغو /cancel را ارسال کنید.",
-        parse_mode=ParseMode.HTML,
-    )
-    return SEARCH_NAME
-
-async def search_professors_receive_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = normalize_text(update.message.text)
-    if not query or len(query) < 2:
-        await update.message.reply_text(
-            "❌ حداقل ۲ حرف وارد کنید."
+    try:
+        professors = get_all_professors()
+        if not professors:
+            await q.edit_message_text(
+                "📋 <b>لیست اساتید</b>\n\n"
+                "هنوز هیچ استادی ثبت نشده است.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=home_keyboard(q.from_user.id),
+            )
+            return
+        try:
+            page = int(q.data.split(":")[1])
+        except (IndexError, ValueError):
+            page = 0
+        total = len(professors)
+        total_pages = max(
+            1,
+            (total + PROFESSOR_PAGE_SIZE - 1)
+            // PROFESSOR_PAGE_SIZE,
         )
-        return SEARCH_NAME
-    
-    results = search_professors_by_name(query)
-    
-    if not results:
-        await update.message.reply_text(
-            "❌ استادی با این نام پیدا نشد.\n\n"
-            "می‌توانید از گزینه «➕ پیشنهاد استاد جدید» استفاده کنید.",
-            reply_markup=home_keyboard(update.effective_user.id),
+        page = max(
+            0,
+            min(page, total_pages - 1),
         )
-        context.user_data.clear()
-        return ConversationHandler.END
-    
-    context.user_data["search_results"] = results
-    context.user_data["search_query"] = query
-    
-    text = (
-        f"🔍 <b>نتایج جستجو برای:</b> {escape(query)}\n\n"
-        f"<b>{len(results)}</b> استاد پیدا شد:\n\n"
-    )
-    
-    buttons = []
-    for professor in results:
-        name = escape(professor["name"])
-        course = escape(professor["course"] or "درس ثبت نشده")
-        university = escape(professor["university"] or "دانشگاه ثبت نشده")
-        text += (
-            f"👤 <b>{name}</b>\n"
-            f"📚 {course}\n"
-            f"🏛 {university}\n\n"
+        start_index = page * PROFESSOR_PAGE_SIZE
+        end_index = start_index + PROFESSOR_PAGE_SIZE
+        page_professors = professors[
+            start_index:end_index
+        ]
+        text = (
+            "📋 <b>لیست اساتید</b>\n\n"
+            f"صفحه <b>{page + 1}</b> از <b>{total_pages}</b>\n\n"
+        )
+        buttons = []
+        for professor in page_professors:
+            name = escape(
+                professor["name"]
+            )
+            course = escape(
+                professor["course"]
+                or "درس ثبت نشده"
+            )
+            code = escape(
+                professor["code"]
+                or generate_professor_code(
+                    professor["id"]
+                )
+            )
+            text += (
+                f"👤 <b>{name}</b>\n"
+                f"📚 درس: <b>{course}</b>\n"
+                f"🔢 کد: <code>{code}</code>\n\n"
+            )
+            button_text = (
+                f"👤 {professor['name'][:25]}"
+            )
+            buttons.append(
+                [
+                    InlineKeyboardButton(
+                        button_text,
+                        callback_data=(
+                            f"view_prof:{professor['id']}:0"
+                        ),
+                    )
+                ]
+            )
+        navigation = []
+        if page > 0:
+            navigation.append(
+                InlineKeyboardButton(
+                    "◀️ قبلی",
+                    callback_data=(
+                        f"list_professors:{page - 1}"
+                    ),
+                )
+            )
+        if page < total_pages - 1:
+            navigation.append(
+                InlineKeyboardButton(
+                    "بعدی ▶️",
+                    callback_data=(
+                        f"list_professors:{page + 1}"
+                    ),
+                )
+            )
+        if navigation:
+            buttons.append(navigation)
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    "🔢 ورود کد استاد",
+                    callback_data="enter_code",
+                )
+            ]
         )
         buttons.append(
             [
                 InlineKeyboardButton(
-                    f"👤 {name[:25]}",
-                    callback_data=f"view_prof:{professor['id']}:0",
+                    "🏠 منوی اصلی",
+                    callback_data="main_menu",
                 )
             ]
         )
-    
-    buttons.append(
-        [
-            InlineKeyboardButton(
-                "🏠 منوی اصلی",
-                callback_data="main_menu",
-            )
-        ]
-    )
-    
-    await update.message.reply_text(
-        text,
-        parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(buttons),
-    )
-    
-    context.user_data.clear()
-    return ConversationHandler.END
+        await q.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+    except Exception:
+        logger.exception("Error while showing professor list.")
+        await q.edit_message_text(
+            "❌ خطا در دریافت لیست اساتید.\n"
+            "لطفاً دوباره تلاش کنید.",
+            reply_markup=home_keyboard(
+                q.from_user.id
+            ),
+        )
 
-async def student_add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def enter_code_start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     q = update.callback_query
     await q.answer()
     context.user_data.clear()
     await q.edit_message_text(
-        "➕ <b>پیشنهاد استاد جدید</b>\n\n"
-        "نام و نام خانوادگی استاد را وارد کنید.\n\n"
+        "🔢 <b>کد استاد را وارد کنید</b>\n\n"
+        "مثال:\n"
+        "<code>OST-0001</code>\n\n"
         "برای لغو /cancel را ارسال کنید.",
         parse_mode=ParseMode.HTML,
     )
-    return ADD_NAME
+    return PROFESSOR_CODE
 
-async def student_receive_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    name = normalize_text(update.message.text)
-    if not name or len(name) < 2:
+async def receive_code(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    code = normalize_text(update.message.text)
+    professor = get_professor_by_code(code)
+    if not professor:
         await update.message.reply_text(
-            "❌ نام معتبر وارد کنید."
-        )
-        return ADD_NAME
-    
-    existing = search_professors_by_name(name)
-    if existing:
-        text = "⚠️ <b>استاد مشابهی در سیستم وجود دارد:</b>\n\n"
-        for prof in existing[:5]:
-            text += f"👤 {escape(prof['name'])}\n"
-            if prof['university']:
-                text += f"🏛 {escape(prof['university'])}\n"
-            text += "\n"
-        
-        text += "آیا همچنان می‌خواهید استاد جدید پیشنهاد دهید؟"
-        
-        markup = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        "✅ بله، ادامه",
-                        callback_data="continue_add",
-                    ),
-                    InlineKeyboardButton(
-                        "❌ نه، لغو",
-                        callback_data="main_menu",
-                    ),
-                ]
-            ]
-        )
-        
-        context.user_data["new_prof_name"] = name
-        await update.message.reply_text(
-            text,
+            "❌ این کد پیدا نشد.\n\n"
+            "مثلاً:\n"
+            "<code>OST-0001</code>",
             parse_mode=ParseMode.HTML,
-            reply_markup=markup,
         )
-        return ADD_COURSE
-    
-    context.user_data["new_prof_name"] = name
-    await update.message.reply_text(
-        "📚 نام درس را وارد کنید.\n\n"
-        "اگر درس مشخص نیست، «ندارم» را بنویسید."
+        return PROFESSOR_CODE
+    await send_professor_page(
+        update,
+        professor,
+        comment_page=0,
     )
-    return ADD_COURSE
-
-async def student_continue_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    name = context.user_data.get("new_prof_name")
-    if not name:
-        await q.edit_message_text(
-            "❌ اطلاعات ناقص است.",
-            reply_markup=home_keyboard(q.from_user.id),
-        )
-        context.user_data.clear()
-        return ConversationHandler.END
-    
-    await q.edit_message_text(
-        f"📚 نام درس را برای استاد <b>{escape(name)}</b> وارد کنید.\n\n"
-        "اگر درس مشخص نیست، «ندارم» را بنویسید.",
-        parse_mode=ParseMode.HTML,
-    )
-    return ADD_COURSE
-
-async def student_receive_course(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    course = normalize_text(update.message.text)
-    if course in {"ندارم", "ندارد", "-", "ندارم.", "ندارم "}:
-        course = None
-    
-    context.user_data["new_prof_course"] = course
-    
-    await update.message.reply_text(
-        "🏛 نام دانشگاه را وارد کنید.\n\n"
-        "اگر مشخص نیست، «ندارم» بنویسید."
-    )
-    return ADD_UNIVERSITY
-
-async def student_receive_university(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    university = normalize_text(update.message.text)
-    if university in {"ندارم", "ندارد", "-", "ندارم.", "ندارم "}:
-        university = None
-    
-    return await finish_student_request(update, context, university)
-
-async def finish_student_request(update: Update, context: ContextTypes.DEFAULT_TYPE, university):
-    name = context.user_data.get("new_prof_name")
-    course = context.user_data.get("new_prof_course")
-    
-    if not name:
-        await update.message.reply_text(
-            "❌ اطلاعات درخواست ناقص است.",
-            reply_markup=home_keyboard(update.effective_user.id),
-        )
-        context.user_data.clear()
-        return ConversationHandler.END
-    
-    try:
-        request_id = create_professor_request(
-            name,
-            course,
-            university,
-            update.effective_user.id,
-        )
-        await notify_admins_about_request(context, request_id)
-        await update.message.reply_text(
-            "✅ <b>درخواست شما ثبت شد.</b>\n\n"
-            "درخواست پس از بررسی ادمین در لیست اساتید قرار می‌گیرد.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=home_keyboard(update.effective_user.id),
-        )
-    except Exception:
-        logger.exception("Could not finish student request.")
-        await update.message.reply_text(
-            "❌ ثبت درخواست انجام نشد.\nلطفاً دوباره تلاش کنید.",
-            reply_markup=home_keyboard(update.effective_user.id),
-        )
-    
     context.user_data.clear()
     return ConversationHandler.END
 
-async def notify_admins_about_request(context: ContextTypes.DEFAULT_TYPE, request_id):
-    request = get_request(request_id)
-    if not request:
-        return
-    
-    text = (
-        "📨 <b>درخواست جدید استاد</b>\n\n"
-        f"🆔 درخواست: <code>{request['id']}</code>\n"
-        f"👤 نام: <b>{escape(request['name'])}</b>\n"
-        f"📚 درس: <b>{escape(request['course'] or 'ثبت نشده')}</b>\n"
-        f"🏛 دانشگاه: <b>{escape(request['university'] or 'ثبت نشده')}</b>\n"
-        f"👨‍🎓 شناسه درخواست‌دهنده: <code>{request['requester_id']}</code>"
-    )
-    
-    markup = InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    "✅ تأیید",
-                    callback_data=f"approve:{request_id}",
-                ),
-                InlineKeyboardButton(
-                    "❌ رد",
-                    callback_data=f"reject:{request_id}",
-                ),
-            ]
-        ]
-    )
-    
-    for admin_id in ADMIN_IDS:
-        try:
-            await context.bot.send_message(
-                chat_id=admin_id,
-                text=text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=markup,
-            )
-        except Exception:
-            logger.exception("Could not notify admin %s", admin_id)
-
-async def view_professor(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def view_professor(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     q = update.callback_query
     await q.answer()
     try:
@@ -1028,92 +878,144 @@ async def view_professor(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 comment_page = int(parts[2])
             except ValueError:
                 comment_page = 0
-        professor = get_professor_by_id(professor_id)
+        professor = get_professor_by_id(
+            professor_id
+        )
         if not professor:
             await q.edit_message_text(
                 "❌ استاد پیدا نشد.",
-                reply_markup=home_keyboard(q.from_user.id),
+                reply_markup=home_keyboard(
+                    q.from_user.id
+                ),
             )
             return
-        await send_professor_page(update, professor, comment_page=comment_page)
+        await send_professor_page(
+            update,
+            professor,
+            comment_page=comment_page,
+        )
     except Exception:
-        logger.exception("Error while showing professor details.")
+        logger.exception(
+            "Error while showing professor details."
+        )
         await q.edit_message_text(
             "❌ خطا در نمایش اطلاعات استاد.",
-            reply_markup=home_keyboard(q.from_user.id),
+            reply_markup=home_keyboard(
+                q.from_user.id
+            ),
         )
 
-async def send_professor_page(update: Update, professor, comment_page=0):
+async def send_professor_page(
+    update: Update,
+    professor,
+    comment_page=0,
+):
     professor_id = int(professor["id"])
-    info = get_rating_info(professor_id)
-    comments, total_comments, total_comment_pages, actual_page = get_comment_page(professor_id, comment_page)
-    
-    name = escape(professor["name"])
-    course = escape(professor["course"] or "ثبت نشده")
-    university = escape(professor["university"] or "ثبت نشده")
-    code = escape(professor["code"] or generate_professor_code(professor_id))
-    
+    info = get_rating_info(
+        professor_id
+    )
+    comments, total_comments, total_comment_pages, actual_page = (
+        get_comment_page(
+            professor_id,
+            comment_page,
+        )
+    )
+    name = escape(
+        professor["name"]
+    )
+    course = escape(
+        professor["course"]
+        or "ثبت نشده"
+    )
+    code = escape(
+        professor["code"]
+        or generate_professor_code(
+            professor_id
+        )
+    )
     text = (
         f"🎓 <b>{name}</b>\n\n"
         f"📚 درس: <b>{course}</b>\n"
-        f"🏛 دانشگاه: <b>{university}</b>\n"
         f"🔢 کد: <code>{code}</code>\n\n"
     )
-    
     if info["total"]:
         text += (
-            f"📊 میانگین امتیاز: <b>{info['average']} از 5</b>\n"
-            f"📝 تعداد امتیازها: <b>{info['total']}</b>\n"
+            f"📊 میانگین امتیاز: "
+            f"<b>{info['average']} از 5</b>\n"
+            f"📝 تعداد امتیازها: "
+            f"<b>{info['total']}</b>\n"
         )
     else:
-        text += "📊 هنوز امتیازی ثبت نشده است.\n"
-    
+        text += (
+            "📊 هنوز امتیازی ثبت نشده است.\n"
+        )
     if comments:
-        text += "\n💬 <b>آخرین نظرات</b>\n\n"
-        for index, comment in enumerate(comments, start=1):
-            comment_text = escape(comment["comment"])
+        text += (
+            "\n💬 <b>آخرین نظرات</b>\n\n"
+        )
+        for index, comment in enumerate(
+            comments,
+            start=1,
+        ):
+            comment_text = escape(
+                comment["comment"]
+            )
             text += (
-                f"{index}. ⭐ <b>{comment['score']} از 5</b>\n"
+                f"{index}. ⭐ <b>"
+                f"{comment['score']} از 5"
+                f"</b>\n"
                 f"📝 {comment_text}\n\n"
             )
         if total_comment_pages > 1:
-            text += f"صفحه نظرات: <b>{actual_page + 1}</b> از <b>{total_comment_pages}</b>\n"
+            text += (
+                f"صفحه نظرات: "
+                f"<b>{actual_page + 1}</b> "
+                f"از "
+                f"<b>{total_comment_pages}</b>\n"
+            )
     else:
-        text += "\n💬 هنوز نظری ثبت نشده است.\n"
-    
+        text += (
+            "\n💬 هنوز نظری ثبت نشده است.\n"
+        )
     buttons = [
         [
             InlineKeyboardButton(
                 "📝 ثبت / ویرایش نظر",
-                callback_data=f"rate:{professor_id}",
+                callback_data=(
+                    f"rate:{professor_id}"
+                ),
             )
         ]
     ]
-    
     if total_comment_pages > 1:
         navigation = []
         if actual_page > 0:
             navigation.append(
                 InlineKeyboardButton(
                     "◀️ نظرات جدیدتر",
-                    callback_data=f"view_prof:{professor_id}:{actual_page - 1}",
+                    callback_data=(
+                        f"view_prof:{professor_id}:"
+                        f"{actual_page - 1}"
+                    ),
                 )
             )
         if actual_page < total_comment_pages - 1:
             navigation.append(
                 InlineKeyboardButton(
                     "نظرات قدیمی‌تر ▶️",
-                    callback_data=f"view_prof:{professor_id}:{actual_page + 1}",
+                    callback_data=(
+                        f"view_prof:{professor_id}:"
+                        f"{actual_page + 1}"
+                    ),
                 )
             )
         if navigation:
             buttons.append(navigation)
-    
     buttons.append(
         [
             InlineKeyboardButton(
-                "🔍 جستجوی مجدد",
-                callback_data="search_professors",
+                "📋 لیست اساتید",
+                callback_data="list_professors:0",
             )
         ]
     )
@@ -1125,9 +1027,7 @@ async def send_professor_page(update: Update, professor, comment_page=0):
             )
         ]
     )
-    
     markup = InlineKeyboardMarkup(buttons)
-    
     if update.callback_query:
         try:
             await update.callback_query.edit_message_text(
@@ -1145,57 +1045,244 @@ async def send_professor_page(update: Update, professor, comment_page=0):
             reply_markup=markup,
         )
 
-async def rating_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def student_add_start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     q = update.callback_query
     await q.answer()
-    try:
-        professor_id = int(q.data.split(":", 1)[1])
-    except (IndexError, ValueError):
-        await q.edit_message_text(
-            "❌ اطلاعات استاد نامعتبر است.",
-            reply_markup=home_keyboard(q.from_user.id),
-        )
-        return ConversationHandler.END
-    
-    professor = get_professor_by_id(professor_id)
-    if not professor:
-        await q.edit_message_text(
-            "❌ استاد پیدا نشد.",
-            reply_markup=home_keyboard(q.from_user.id),
-        )
-        return ConversationHandler.END
-    
     context.user_data.clear()
-    context.user_data["rating_professor_id"] = professor_id
-    
-    old_rating = get_user_rating(professor_id, q.from_user.id)
-    if old_rating:
-        prefix = (
-            "⚠️ شما قبلاً برای این استاد امتیاز ثبت کرده‌اید.\n"
-            "با انتخاب امتیاز جدید، امتیاز قبلی ویرایش می‌شود.\n\n"
+    await q.edit_message_text(
+        "➕ <b>پیشنهاد استاد جدید</b>\n\n"
+        "نام و نام خانوادگی استاد را وارد کنید.\n\n"
+        "برای لغو /cancel را ارسال کنید.",
+        parse_mode=ParseMode.HTML,
+    )
+    return ADD_NAME
+
+async def student_receive_name(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    name = normalize_text(
+        update.message.text
+    )
+    if not name or len(name) < 2:
+        await update.message.reply_text(
+            "❌ نام معتبر وارد کنید."
         )
-    else:
-        prefix = ""
-    
+        return ADD_NAME
+    context.user_data["new_prof_name"] = name
+    await update.message.reply_text(
+        "📚 نام درس را وارد کنید.\n\n"
+        "اگر درس مشخص نیست، «ندارم» را بنویسید."
+    )
+    return ADD_COURSE
+
+async def student_receive_course(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    course = normalize_text(
+        update.message.text
+    )
+    if course in {
+        "ندارم",
+        "ندارد",
+        "-",
+        "ندارم.",
+        "ندارم ",
+    }:
+        course = None
+    return await finish_student_request(
+        update,
+        context,
+        course,
+    )
+
+async def finish_student_request(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    course,
+):
+    name = context.user_data.get(
+        "new_prof_name"
+    )
+    if not name:
+        await update.message.reply_text(
+            "❌ اطلاعات درخواست ناقص است.",
+            reply_markup=home_keyboard(
+                update.effective_user.id
+            ),
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
+    try:
+        request_id = create_professor_request(
+            name,
+            course,
+            update.effective_user.id,
+        )
+        await notify_admins_about_request(
+            context,
+            request_id,
+        )
+        await update.message.reply_text(
+            "✅ <b>درخواست شما ثبت شد.</b>\n\n"
+            "درخواست پس از بررسی ادمین "
+            "در لیست اساتید قرار می‌گیرد.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=home_keyboard(
+                update.effective_user.id
+            ),
+        )
+    except Exception:
+        logger.exception(
+            "Could not finish student request."
+        )
+        await update.message.reply_text(
+            "❌ ثبت درخواست انجام نشد.\n"
+            "لطفاً دوباره تلاش کنید.",
+            reply_markup=home_keyboard(
+                update.effective_user.id
+            ),
+        )
+    context.user_data.clear()
+    return ConversationHandler.END
+
+async def notify_admins_about_request(
+    context: ContextTypes.DEFAULT_TYPE,
+    request_id,
+):
+    request = get_request(request_id)
+    if not request:
+        return
+    text = (
+        "📨 <b>درخواست جدید استاد</b>\n\n"
+        f"🆔 درخواست: "
+        f"<code>{request['id']}</code>\n"
+        f"👤 نام: "
+        f"<b>{escape(request['name'])}</b>\n"
+        f"📚 درس: "
+        f"<b>{escape(request['course'] or 'ثبت نشده')}</b>\n"
+        f"👨‍🎓 شناسه درخواست‌دهنده: "
+        f"<code>{request['requester_id']}</code>"
+    )
     markup = InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("1 ⭐", callback_data="score:1"),
-                InlineKeyboardButton("2 ⭐⭐", callback_data="score:2"),
-                InlineKeyboardButton("3 ⭐⭐⭐", callback_data="score:3"),
+                InlineKeyboardButton(
+                    "✅ تأیید",
+                    callback_data=(
+                        f"approve:{request_id}"
+                    ),
+                ),
+                InlineKeyboardButton(
+                    "❌ رد",
+                    callback_data=(
+                        f"reject:{request_id}"
+                    ),
+                ),
+            ]
+        ]
+    )
+    for admin_id in ADMIN_IDS:
+        try:
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text=text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=markup,
+            )
+        except Exception:
+            logger.exception(
+                "Could not notify admin %s",
+                admin_id,
+            )
+
+async def rating_start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    q = update.callback_query
+    await q.answer()
+    try:
+        professor_id = int(
+            q.data.split(":", 1)[1]
+        )
+    except (IndexError, ValueError):
+        await q.edit_message_text(
+            "❌ اطلاعات استاد نامعتبر است.",
+            reply_markup=home_keyboard(
+                q.from_user.id
+            ),
+        )
+        return ConversationHandler.END
+    professor = get_professor_by_id(
+        professor_id
+    )
+    if not professor:
+        await q.edit_message_text(
+            "❌ استاد پیدا نشد.",
+            reply_markup=home_keyboard(
+                q.from_user.id
+            ),
+        )
+        return ConversationHandler.END
+    context.user_data.clear()
+    context.user_data[
+        "rating_professor_id"
+    ] = professor_id
+    old_rating = get_user_rating(
+        professor_id,
+        q.from_user.id,
+    )
+    if old_rating:
+        prefix = (
+            "⚠️ شما قبلاً برای این استاد "
+            "امتیاز ثبت کرده‌اید.\n"
+            "با انتخاب امتیاز جدید، "
+            "امتیاز قبلی ویرایش می‌شود.\n\n"
+        )
+    else:
+        prefix = ""
+    markup = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "1 ⭐",
+                    callback_data="score:1",
+                ),
+                InlineKeyboardButton(
+                    "2 ⭐⭐",
+                    callback_data="score:2",
+                ),
+                InlineKeyboardButton(
+                    "3 ⭐⭐⭐",
+                    callback_data="score:3",
+                ),
             ],
             [
-                InlineKeyboardButton("4 ⭐⭐⭐⭐", callback_data="score:4"),
-                InlineKeyboardButton("5 ⭐⭐⭐⭐⭐", callback_data="score:5"),
+                InlineKeyboardButton(
+                    "4 ⭐⭐⭐⭐",
+                    callback_data="score:4",
+                ),
+                InlineKeyboardButton(
+                    "5 ⭐⭐⭐⭐⭐",
+                    callback_data="score:5",
+                ),
             ],
             [
-                InlineKeyboardButton("❌ لغو", callback_data="cancel_rating"),
+                InlineKeyboardButton(
+                    "❌ لغو",
+                    callback_data="cancel_rating",
+                )
             ],
         ]
     )
-    
     await q.edit_message_text(
-        f"📝 <b>امتیازدهی به {escape(professor['name'])}</b>\n\n"
+        f"📝 <b>امتیازدهی به "
+        f"{escape(professor['name'])}</b>\n\n"
         f"{prefix}"
         "امتیاز خود را از 1 تا 5 انتخاب کنید:",
         parse_mode=ParseMode.HTML,
@@ -1203,79 +1290,137 @@ async def rating_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return RATING_SCORE
 
-async def select_score(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def select_score(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     q = update.callback_query
     await q.answer()
-    score = int(q.data.split(":", 1)[1])
-    context.user_data["rating_score"] = score
-    
+    score = int(
+        q.data.split(":", 1)[1]
+    )
+    context.user_data[
+        "rating_score"
+    ] = score
     markup = InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("بدون نظر", callback_data="skip_comment"),
+                InlineKeyboardButton(
+                    "بدون نظر",
+                    callback_data="skip_comment",
+                )
             ],
             [
-                InlineKeyboardButton("❌ لغو", callback_data="cancel_rating"),
+                InlineKeyboardButton(
+                    "❌ لغو",
+                    callback_data="cancel_rating",
+                )
             ],
         ]
     )
-    
     await q.edit_message_text(
-        f"💬 <b>نظر خود را بنویسید</b>\n\n"
+        "💬 <b>نظر خود را بنویسید</b>\n\n"
         f"حداکثر <b>{MAX_COMMENT_WORDS} کلمه</b>.\n\n"
-        "اگر نمی‌خواهید نظری ثبت کنید، «بدون نظر» را بزنید.",
+        "اگر نمی‌خواهید نظری ثبت کنید، "
+        "«بدون نظر» را بزنید.",
         parse_mode=ParseMode.HTML,
         reply_markup=markup,
     )
     return RATING_COMMENT
 
-async def receive_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    comment = normalize_text(update.message.text)
+async def receive_comment(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    comment = normalize_text(
+        update.message.text
+    )
     if not comment:
-        await update.message.reply_text("❌ متن نظر نمی‌تواند خالی باشد.")
+        await update.message.reply_text(
+            "❌ متن نظر نمی‌تواند خالی باشد."
+        )
         return RATING_COMMENT
-    
-    word_count = len(comment.split())
+    word_count = len(
+        comment.split()
+    )
     if word_count > MAX_COMMENT_WORDS:
         await update.message.reply_text(
-            f"❌ <b>نظر شما بیشتر از حد مجاز است.</b>\n\n"
+            "❌ <b>نظر شما بیشتر از حد مجاز است.</b>\n\n"
             f"تعداد کلمات: <b>{word_count}</b>\n"
             f"حداکثر مجاز: <b>{MAX_COMMENT_WORDS}</b>\n\n"
             "لطفاً نظر را کوتاه‌تر کنید.",
             parse_mode=ParseMode.HTML,
         )
         return RATING_COMMENT
-    
-    return await finish_rating(update, context, comment)
+    return await finish_rating(
+        update,
+        context,
+        comment,
+    )
 
-async def skip_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def skip_comment(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     q = update.callback_query
     await q.answer()
-    return await finish_rating(update, context, None, query=q)
+    return await finish_rating(
+        update,
+        context,
+        None,
+        query=q,
+    )
 
-async def finish_rating(update: Update, context: ContextTypes.DEFAULT_TYPE, comment, query=None):
-    professor_id = context.user_data.get("rating_professor_id")
-    score = context.user_data.get("rating_score")
-    
+async def finish_rating(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    comment,
+    query=None,
+):
+    professor_id = context.user_data.get(
+        "rating_professor_id"
+    )
+    score = context.user_data.get(
+        "rating_score"
+    )
     if not professor_id or not score:
-        text = "❌ اطلاعات امتیازدهی ناقص است."
-        markup = home_keyboard(update.effective_user.id)
+        text = (
+            "❌ اطلاعات امتیازدهی ناقص است."
+        )
+        markup = home_keyboard(
+            update.effective_user.id
+        )
         if query:
-            await query.edit_message_text(text, reply_markup=markup)
+            await query.edit_message_text(
+                text,
+                reply_markup=markup,
+            )
         else:
-            await update.message.reply_text(text, reply_markup=markup)
+            await update.message.reply_text(
+                text,
+                reply_markup=markup,
+            )
         context.user_data.clear()
         return ConversationHandler.END
-    
     try:
-        save_rating(professor_id, update.effective_user.id, score, comment)
-        text = "✅ <b>امتیاز شما ثبت شد.</b>\n\nامتیازدهی شما ناشناس است."
+        save_rating(
+            professor_id,
+            update.effective_user.id,
+            score,
+            comment,
+        )
+        text = (
+            "✅ <b>امتیاز شما ثبت شد.</b>\n\n"
+            "امتیازدهی شما ناشناس است."
+        )
         markup = InlineKeyboardMarkup(
             [
                 [
                     InlineKeyboardButton(
                         "🎓 مشاهده استاد",
-                        callback_data=f"view_prof:{professor_id}:0",
+                        callback_data=(
+                            f"view_prof:{professor_id}:0"
+                        ),
                     )
                 ],
                 [
@@ -1287,59 +1432,93 @@ async def finish_rating(update: Update, context: ContextTypes.DEFAULT_TYPE, comm
             ]
         )
         if query:
-            await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+            await query.edit_message_text(
+                text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=markup,
+            )
         else:
-            await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+            await update.message.reply_text(
+                text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=markup,
+            )
     except ValueError as exc:
         if query:
             await query.edit_message_text(
                 f"❌ {escape(str(exc))}",
                 parse_mode=ParseMode.HTML,
-                reply_markup=home_keyboard(update.effective_user.id),
+                reply_markup=home_keyboard(
+                    update.effective_user.id
+                ),
             )
         else:
             await update.message.reply_text(
                 f"❌ {escape(str(exc))}",
                 parse_mode=ParseMode.HTML,
-                reply_markup=home_keyboard(update.effective_user.id),
+                reply_markup=home_keyboard(
+                    update.effective_user.id
+                ),
             )
         return RATING_COMMENT
     except Exception:
-        logger.exception("Could not finish rating.")
+        logger.exception(
+            "Could not finish rating."
+        )
         if query:
             await query.edit_message_text(
-                "❌ ثبت امتیاز انجام نشد.\nلطفاً دوباره تلاش کنید.",
-                reply_markup=home_keyboard(update.effective_user.id),
+                "❌ ثبت امتیاز انجام نشد.\n"
+                "لطفاً دوباره تلاش کنید.",
+                reply_markup=home_keyboard(
+                    update.effective_user.id
+                ),
             )
         else:
             await update.message.reply_text(
-                "❌ ثبت امتیاز انجام نشد.\nلطفاً دوباره تلاش کنید.",
-                reply_markup=home_keyboard(update.effective_user.id),
+                "❌ ثبت امتیاز انجام نشد.\n"
+                "لطفاً دوباره تلاش کنید.",
+                reply_markup=home_keyboard(
+                    update.effective_user.id
+                ),
             )
-    
     context.user_data.clear()
     return ConversationHandler.END
 
-async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def admin_panel(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     q = update.callback_query
     if not is_admin(q.from_user.id):
-        await q.answer("❌ دسترسی ندارید.", show_alert=True)
+        await q.answer(
+            "❌ دسترسی ندارید.",
+            show_alert=True,
+        )
         return
     await q.answer()
     await q.edit_message_text(
-        "🔐 <b>پنل مدیریت</b>\n\nیک گزینه را انتخاب کنید:",
+        "🔐 <b>پنل مدیریت</b>\n\n"
+        "یک گزینه را انتخاب کنید:",
         parse_mode=ParseMode.HTML,
         reply_markup=admin_menu_keyboard(),
     )
 
-async def admin_add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def admin_add_start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     q = update.callback_query
     if not is_admin(q.from_user.id):
-        await q.answer("❌ دسترسی ندارید.", show_alert=True)
+        await q.answer(
+            "❌ دسترسی ندارید.",
+            show_alert=True,
+        )
         return ConversationHandler.END
     await q.answer()
     context.user_data.clear()
-    context.user_data["admin_flow"] = True
+    context.user_data[
+        "admin_flow"
+    ] = True
     await q.edit_message_text(
         "➕ <b>افزودن مستقیم استاد</b>\n\n"
         "نام استاد را وارد کنید.\n\n"
@@ -1349,50 +1528,67 @@ async def admin_add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return ADMIN_ADD_NAME
 
-async def admin_receive_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
+async def admin_receive_name(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    if not is_admin(
+        update.effective_user.id
+    ):
         return ConversationHandler.END
-    name = normalize_text(update.message.text)
+    name = normalize_text(
+        update.message.text
+    )
     if not name or len(name) < 2:
-        await update.message.reply_text("❌ نام معتبر وارد کنید.")
+        await update.message.reply_text(
+            "❌ نام معتبر وارد کنید."
+        )
         return ADMIN_ADD_NAME
-    context.user_data["admin_prof_name"] = name
+    context.user_data[
+        "admin_prof_name"
+    ] = name
     await update.message.reply_text(
         "📚 نام درس را وارد کنید.\n\n"
         "اگر مشخص نیست، «ندارم» بنویسید."
     )
     return ADMIN_ADD_COURSE
 
-async def admin_receive_course(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
+async def admin_receive_course(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    if not is_admin(
+        update.effective_user.id
+    ):
         return ConversationHandler.END
-    course = normalize_text(update.message.text)
-    if course in {"ندارم", "ندارد", "-", "ندارم."}:
-        course = None
-    context.user_data["admin_prof_course"] = course
-    await update.message.reply_text(
-        "🏛 نام دانشگاه را وارد کنید.\n\n"
-        "اگر مشخص نیست، «ندارم» بنویسید."
+    course = normalize_text(
+        update.message.text
     )
-    return ADMIN_ADD_UNIVERSITY
+    if course in {
+        "ندارم",
+        "ندارد",
+        "-",
+        "ندارم.",
+    }:
+        course = None
+    return await finish_admin_add(
+        update,
+        context,
+        course,
+    )
 
-async def admin_receive_university(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        return ConversationHandler.END
-    university = normalize_text(update.message.text)
-    if university in {"ندارم", "ندارد", "-", "ندارم."}:
-        university = None
-    return await finish_admin_add(update, context, university)
-
-async def finish_admin_add(update: Update, context: ContextTypes.DEFAULT_TYPE, university):
+async def finish_admin_add(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    course,
+):
     user_id = update.effective_user.id
     if not is_admin(user_id):
         context.user_data.clear()
         return ConversationHandler.END
-    
-    name = context.user_data.get("admin_prof_name")
-    course = context.user_data.get("admin_prof_course")
-    
+    name = context.user_data.get(
+        "admin_prof_name"
+    )
     if not name:
         await update.message.reply_text(
             "❌ اطلاعات ناقص است.",
@@ -1400,18 +1596,26 @@ async def finish_admin_add(update: Update, context: ContextTypes.DEFAULT_TYPE, u
         )
         context.user_data.clear()
         return ConversationHandler.END
-    
     try:
-        professor_id = create_professor(name, course, university)
+        professor_id = create_professor(
+            name,
+            course,
+        )
         if not professor_id:
-            raise RuntimeError("Professor creation failed.")
-        professor = get_professor_by_id(professor_id)
+            raise RuntimeError(
+                "Professor creation failed."
+            )
+        professor = get_professor_by_id(
+            professor_id
+        )
         text = (
             "✅ <b>استاد با موفقیت اضافه شد.</b>\n\n"
-            f"👤 نام: <b>{escape(professor['name'])}</b>\n"
-            f"📚 درس: <b>{escape(professor['course'] or 'ثبت نشده')}</b>\n"
-            f"🏛 دانشگاه: <b>{escape(professor['university'] or 'ثبت نشده')}</b>\n"
-            f"🔢 کد استاد: <code>{escape(professor['code'])}</code>"
+            f"👤 نام: "
+            f"<b>{escape(professor['name'])}</b>\n"
+            f"📚 درس: "
+            f"<b>{escape(professor['course'] or 'ثبت نشده')}</b>\n"
+            f"🔢 کد استاد: "
+            f"<code>{escape(professor['code'])}</code>"
         )
         await update.message.reply_text(
             text,
@@ -1419,24 +1623,32 @@ async def finish_admin_add(update: Update, context: ContextTypes.DEFAULT_TYPE, u
             reply_markup=admin_menu_keyboard(),
         )
     except Exception:
-        logger.exception("Could not add professor from admin.")
+        logger.exception(
+            "Could not add professor from admin."
+        )
         await update.message.reply_text(
             "❌ افزودن استاد انجام نشد.",
             reply_markup=admin_menu_keyboard(),
         )
-    
     context.user_data.clear()
     return ConversationHandler.END
 
-async def pending_requests(update: Update, context: ContextTypes.DEFAULT_TYPE, page=None, answer_callback=True):
+async def pending_requests(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    page=None,
+    answer_callback=True,
+):
     q = update.callback_query
     if not is_admin(q.from_user.id):
         if answer_callback:
-            await q.answer("❌ دسترسی ندارید.", show_alert=True)
+            await q.answer(
+                "❌ دسترسی ندارید.",
+                show_alert=True,
+            )
         return
     if answer_callback:
         await q.answer()
-    
     requests = get_pending_requests()
     if not requests:
         await q.edit_message_text(
@@ -1445,64 +1657,81 @@ async def pending_requests(update: Update, context: ContextTypes.DEFAULT_TYPE, p
             reply_markup=admin_menu_keyboard(),
         )
         return
-    
     if page is None:
         try:
-            page = int(q.data.split(":")[1])
+            page = int(
+                q.data.split(":")[1]
+            )
         except (IndexError, ValueError):
             page = 0
-    
     total = len(requests)
-    total_pages = max(1, (total + PENDING_PAGE_SIZE - 1) // PENDING_PAGE_SIZE)
-    page = max(0, min(page, total_pages - 1))
-    start_index = page * PENDING_PAGE_SIZE
-    end_index = start_index + PENDING_PAGE_SIZE
-    page_requests = requests[start_index:end_index]
-    
-    text = (
-        f"📨 <b>درخواست‌های در انتظار</b>\n\n"
-        f"صفحه <b>{page + 1}</b> از <b>{total_pages}</b>\n\n"
+    total_pages = max(
+        1,
+        (total + PENDING_PAGE_SIZE - 1)
+        // PENDING_PAGE_SIZE,
     )
-    
+    page = max(
+        0,
+        min(page, total_pages - 1),
+    )
+    start_index = (
+        page * PENDING_PAGE_SIZE
+    )
+    end_index = (
+        start_index + PENDING_PAGE_SIZE
+    )
+    page_requests = requests[
+        start_index:end_index
+    ]
+    text = (
+        "📨 <b>درخواست‌های در انتظار</b>\n\n"
+        f"صفحه <b>{page + 1}</b> از "
+        f"<b>{total_pages}</b>\n\n"
+    )
     buttons = []
     for request in page_requests:
         text += (
             f"🆔 <code>{request['id']}</code>\n"
             f"👤 <b>{escape(request['name'])}</b>\n"
-            f"📚 {escape(request['course'] or 'ثبت نشده')}\n"
-            f"🏛 {escape(request['university'] or 'ثبت نشده')}\n\n"
+            f"📚 {escape(request['course'] or 'ثبت نشده')}\n\n"
         )
         buttons.append(
             [
                 InlineKeyboardButton(
                     f"✅ تأیید #{request['id']}",
-                    callback_data=f"approve:{request['id']}",
+                    callback_data=(
+                        f"approve:{request['id']}"
+                    ),
                 ),
                 InlineKeyboardButton(
                     f"❌ رد #{request['id']}",
-                    callback_data=f"reject:{request['id']}",
+                    callback_data=(
+                        f"reject:{request['id']}"
+                    ),
                 ),
             ]
         )
-    
     navigation = []
     if page > 0:
         navigation.append(
             InlineKeyboardButton(
                 "◀️ قبلی",
-                callback_data=f"pending_requests:{page - 1}",
+                callback_data=(
+                    f"pending_requests:{page - 1}"
+                ),
             )
         )
     if page < total_pages - 1:
         navigation.append(
             InlineKeyboardButton(
                 "بعدی ▶️",
-                callback_data=f"pending_requests:{page + 1}",
+                callback_data=(
+                    f"pending_requests:{page + 1}"
+                ),
             )
         )
     if navigation:
         buttons.append(navigation)
-    
     buttons.append(
         [
             InlineKeyboardButton(
@@ -1511,56 +1740,70 @@ async def pending_requests(update: Update, context: ContextTypes.DEFAULT_TYPE, p
             )
         ]
     )
-    
     await q.edit_message_text(
         text,
         parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(buttons),
+        reply_markup=InlineKeyboardMarkup(
+            buttons
+        ),
     )
 
-async def request_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def request_action(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     q = update.callback_query
     if not is_admin(q.from_user.id):
-        await q.answer("❌ دسترسی ندارید.", show_alert=True)
+        await q.answer(
+            "❌ دسترسی ندارید.",
+            show_alert=True,
+        )
         return
     await q.answer()
-    
     try:
-        action, request_id_text = q.data.split(":", 1)
-        request_id = int(request_id_text)
+        action, request_id_text = (
+            q.data.split(":", 1)
+        )
+        request_id = int(
+            request_id_text
+        )
     except (ValueError, IndexError):
         await q.edit_message_text(
             "❌ درخواست نامعتبر است.",
             reply_markup=admin_menu_keyboard(),
         )
         return
-    
-    request = get_request(request_id)
+    request = get_request(
+        request_id
+    )
     if not request:
         await q.edit_message_text(
             "❌ درخواست پیدا نشد.",
             reply_markup=admin_menu_keyboard(),
         )
         return
-    
     if request["status"] != "pending":
         await q.edit_message_text(
             "⚠️ این درخواست قبلاً بررسی شده است.",
             reply_markup=admin_menu_keyboard(),
         )
         return
-    
     try:
         if action == "approve":
-            professor_id = approve_request(request_id)
+            professor_id = approve_request(
+                request_id
+            )
             if not professor_id:
-                raise RuntimeError("Approval failed.")
-            professor = get_professor_by_id(professor_id)
+                raise RuntimeError(
+                    "Approval failed."
+                )
+            professor = get_professor_by_id(
+                professor_id
+            )
             text = (
                 "✅ <b>درخواست تأیید شد.</b>\n\n"
                 f"👤 <b>{escape(professor['name'])}</b>\n"
                 f"📚 {escape(professor['course'] or 'ثبت نشده')}\n"
-                f"🏛 {escape(professor['university'] or 'ثبت نشده')}\n"
                 f"🔢 <code>{escape(professor['code'])}</code>"
             )
             await q.edit_message_text(
@@ -1575,19 +1818,28 @@ async def request_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         "🎉 <b>درخواست استاد شما تأیید شد.</b>\n\n"
                         f"👤 {escape(professor['name'])}\n"
                         f"📚 {escape(professor['course'] or 'ثبت نشده')}\n"
-                        f"🏛 {escape(professor['university'] or 'ثبت نشده')}\n"
-                        f"🔢 کد استاد: <code>{escape(professor['code'])}</code>"
+                        f"🔢 کد استاد: "
+                        f"<code>{escape(professor['code'])}</code>"
                     ),
                     parse_mode=ParseMode.HTML,
                 )
             except Exception:
-                logger.exception("Requester approval notification failed.")
+                logger.exception(
+                    "Requester approval notification failed."
+                )
         elif action == "reject":
-            success = reject_request(request_id)
+            success = reject_request(
+                request_id
+            )
             if not success:
-                raise RuntimeError("Rejection failed.")
+                raise RuntimeError(
+                    "Rejection failed."
+                )
             await q.edit_message_text(
-                f"❌ <b>درخواست رد شد.</b>\n\n👤 {escape(request['name'])}",
+                (
+                    "❌ <b>درخواست رد شد.</b>\n\n"
+                    f"👤 {escape(request['name'])}"
+                ),
                 parse_mode=ParseMode.HTML,
                 reply_markup=admin_menu_keyboard(),
             )
@@ -1601,23 +1853,35 @@ async def request_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode=ParseMode.HTML,
                 )
             except Exception:
-                logger.exception("Requester rejection notification failed.")
+                logger.exception(
+                    "Requester rejection notification failed."
+                )
     except Exception:
-        logger.exception("Could not process professor request.")
+        logger.exception(
+            "Could not process professor request."
+        )
         await q.edit_message_text(
-            "❌ انجام عملیات ممکن نشد.\nدوباره تلاش کنید.",
+            "❌ انجام عملیات ممکن نشد.\n"
+            "دوباره تلاش کنید.",
             reply_markup=admin_menu_keyboard(),
         )
 
-async def manage_professors(update: Update, context: ContextTypes.DEFAULT_TYPE, page=None, answer_callback=True):
+async def manage_professors(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    page=None,
+    answer_callback=True,
+):
     q = update.callback_query
     if not is_admin(q.from_user.id):
         if answer_callback:
-            await q.answer("❌ دسترسی ندارید.", show_alert=True)
+            await q.answer(
+                "❌ دسترسی ندارید.",
+                show_alert=True,
+            )
         return
     if answer_callback:
         await q.answer()
-    
     professors = get_all_professors()
     if not professors:
         await q.edit_message_text(
@@ -1626,58 +1890,84 @@ async def manage_professors(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             reply_markup=admin_menu_keyboard(),
         )
         return
-    
     if page is None:
         try:
-            page = int(q.data.split(":")[1])
+            page = int(
+                q.data.split(":")[1]
+            )
         except (IndexError, ValueError):
             page = 0
-    
     total = len(professors)
-    total_pages = max(1, (total + ADMIN_PROFESSOR_PAGE_SIZE - 1) // ADMIN_PROFESSOR_PAGE_SIZE)
-    page = max(0, min(page, total_pages - 1))
-    start_index = page * ADMIN_PROFESSOR_PAGE_SIZE
-    end_index = start_index + ADMIN_PROFESSOR_PAGE_SIZE
-    page_professors = professors[start_index:end_index]
-    
+    total_pages = max(
+        1,
+        (
+            total
+            + ADMIN_PROFESSOR_PAGE_SIZE
+            - 1
+        )
+        // ADMIN_PROFESSOR_PAGE_SIZE,
+    )
+    page = max(
+        0,
+        min(page, total_pages - 1),
+    )
+    start_index = (
+        page * ADMIN_PROFESSOR_PAGE_SIZE
+    )
+    end_index = (
+        start_index
+        + ADMIN_PROFESSOR_PAGE_SIZE
+    )
+    page_professors = professors[
+        start_index:end_index
+    ]
     text = (
-        f"📋 <b>مدیریت اساتید</b>\n\n"
-        f"صفحه <b>{page + 1}</b> از <b>{total_pages}</b>\n\n"
+        "📋 <b>مدیریت اساتید</b>\n\n"
+        f"صفحه <b>{page + 1}</b> از "
+        f"<b>{total_pages}</b>\n\n"
         "برای مدیریت یک استاد، آن را انتخاب کنید."
     )
-    
     buttons = []
     for professor in page_professors:
-        course = professor["course"] or "بدون درس"
-        university = professor["university"] or "بدون دانشگاه"
-        button_text = f"👤 {professor['name'][:15]} | {university[:15]}"
+        course = (
+            professor["course"]
+            or "بدون درس"
+        )
+        button_text = (
+            f"👤 {professor['name'][:20]} | "
+            f"{course[:15]}"
+        )
         buttons.append(
             [
                 InlineKeyboardButton(
                     button_text,
-                    callback_data=f"admin_prof:{professor['id']}",
+                    callback_data=(
+                        f"admin_prof:{professor['id']}"
+                    ),
                 )
             ]
         )
-    
     navigation = []
     if page > 0:
         navigation.append(
             InlineKeyboardButton(
                 "◀️ قبلی",
-                callback_data=f"manage_professors:{page - 1}",
+                callback_data=(
+                    f"manage_professors:{page - 1}"
+                ),
             )
         )
     if page < total_pages - 1:
         navigation.append(
             InlineKeyboardButton(
                 "بعدی ▶️",
-                callback_data=f"manage_professors:{page + 1}",
+                callback_data=(
+                    f"manage_professors:{page + 1}"
+                ),
             )
         )
     if navigation:
         buttons.append(navigation)
-    
     buttons.append(
         [
             InlineKeyboardButton(
@@ -1686,48 +1976,56 @@ async def manage_professors(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             )
         ]
     )
-    
     await q.edit_message_text(
         text,
         parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(buttons),
+        reply_markup=InlineKeyboardMarkup(
+            buttons
+        ),
     )
 
-async def admin_professor_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def admin_professor_details(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     q = update.callback_query
     if not is_admin(q.from_user.id):
-        await q.answer("❌ دسترسی ندارید.", show_alert=True)
+        await q.answer(
+            "❌ دسترسی ندارید.",
+            show_alert=True,
+        )
         return
     await q.answer()
-    
     try:
-        professor_id = int(q.data.split(":", 1)[1])
+        professor_id = int(
+            q.data.split(":", 1)[1]
+        )
     except (IndexError, ValueError):
         await q.edit_message_text(
             "❌ اطلاعات استاد نامعتبر است.",
             reply_markup=admin_menu_keyboard(),
         )
         return
-    
-    professor = get_professor_by_id(professor_id)
+    professor = get_professor_by_id(
+        professor_id
+    )
     if not professor:
         await q.edit_message_text(
             "❌ استاد پیدا نشد.",
             reply_markup=admin_menu_keyboard(),
         )
         return
-    
-    info = get_rating_info(professor_id)
+    info = get_rating_info(
+        professor_id
+    )
     text = (
         "👤 <b>اطلاعات استاد</b>\n\n"
         f"نام: <b>{escape(professor['name'])}</b>\n"
         f"درس: <b>{escape(professor['course'] or 'ثبت نشده')}</b>\n"
-        f"دانشگاه: <b>{escape(professor['university'] or 'ثبت نشده')}</b>\n"
         f"کد: <code>{escape(professor['code'])}</code>\n\n"
         f"میانگین: <b>{info['average']} از 5</b>\n"
         f"تعداد رأی: <b>{info['total']}</b>"
     )
-    
     await q.edit_message_text(
         text,
         parse_mode=ParseMode.HTML,
@@ -1736,7 +2034,9 @@ async def admin_professor_details(update: Update, context: ContextTypes.DEFAULT_
                 [
                     InlineKeyboardButton(
                         "🗑 حذف استاد",
-                        callback_data=f"delete_prof:{professor_id}",
+                        callback_data=(
+                            f"delete_prof:{professor_id}"
+                        ),
                     )
                 ],
                 [
@@ -1749,70 +2049,93 @@ async def admin_professor_details(update: Update, context: ContextTypes.DEFAULT_
         ),
     )
 
-async def delete_professor_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def delete_professor_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     q = update.callback_query
     if not is_admin(q.from_user.id):
-        await q.answer("❌ دسترسی ندارید.", show_alert=True)
+        await q.answer(
+            "❌ دسترسی ندارید.",
+            show_alert=True,
+        )
         return
     await q.answer()
-    
     try:
-        professor_id = int(q.data.split(":", 1)[1])
+        professor_id = int(
+            q.data.split(":", 1)[1]
+        )
     except (IndexError, ValueError):
         await q.edit_message_text(
             "❌ اطلاعات استاد نامعتبر است.",
             reply_markup=admin_menu_keyboard(),
         )
         return
-    
-    professor = get_professor_by_id(professor_id)
+    professor = get_professor_by_id(
+        professor_id
+    )
     if not professor:
         await q.edit_message_text(
             "❌ استاد پیدا نشد.",
             reply_markup=admin_menu_keyboard(),
         )
         return
-    
     await q.edit_message_text(
-        f"⚠️ <b>تأیید حذف</b>\n\n"
-        f"آیا «<b>{escape(professor['name'])}</b>» حذف شود؟\n\n"
-        "تمام امتیازها و نظرات این استاد نیز حذف خواهند شد.",
+        (
+            "⚠️ <b>تأیید حذف</b>\n\n"
+            f"آیا «<b>{escape(professor['name'])}</b>» "
+            "حذف شود؟\n\n"
+            "تمام امتیازها و نظرات این استاد نیز "
+            "حذف خواهند شد."
+        ),
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(
             [
                 [
                     InlineKeyboardButton(
                         "⚠️ بله، حذف شود",
-                        callback_data=f"confirm_delete:{professor_id}",
+                        callback_data=(
+                            f"confirm_delete:{professor_id}"
+                        ),
                     )
                 ],
                 [
                     InlineKeyboardButton(
                         "❌ لغو",
-                        callback_data=f"admin_prof:{professor_id}",
+                        callback_data=(
+                            f"admin_prof:{professor_id}"
+                        ),
                     )
                 ],
             ]
         ),
     )
 
-async def confirm_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def confirm_delete_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     q = update.callback_query
     if not is_admin(q.from_user.id):
-        await q.answer("❌ دسترسی ندارید.", show_alert=True)
+        await q.answer(
+            "❌ دسترسی ندارید.",
+            show_alert=True,
+        )
         return
     await q.answer()
-    
     try:
-        professor_id = int(q.data.split(":", 1)[1])
+        professor_id = int(
+            q.data.split(":", 1)[1]
+        )
     except (IndexError, ValueError):
         await q.edit_message_text(
             "❌ اطلاعات استاد نامعتبر است.",
             reply_markup=admin_menu_keyboard(),
         )
         return
-    
-    success = delete_professor(professor_id)
+    success = delete_professor(
+        professor_id
+    )
     if success:
         await q.edit_message_text(
             "✅ استاد با موفقیت حذف شد.",
@@ -1824,9 +2147,16 @@ async def confirm_delete_callback(update: Update, context: ContextTypes.DEFAULT_
             reply_markup=admin_menu_keyboard(),
         )
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cancel(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     user_id = update.effective_user.id
-    was_admin_flow = bool(context.user_data.get("admin_flow"))
+    was_admin_flow = bool(
+        context.user_data.get(
+            "admin_flow"
+        )
+    )
     context.user_data.clear()
     if update.message:
         if was_admin_flow and is_admin(user_id):
@@ -1837,149 +2167,290 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text(
                 "❌ عملیات لغو شد.",
-                reply_markup=main_menu_keyboard(user_id),
+                reply_markup=main_menu_keyboard(
+                    user_id
+                ),
             )
     return ConversationHandler.END
 
-async def cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cancel_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     q = update.callback_query
     user_id = q.from_user.id
-    was_admin_flow = bool(context.user_data.get("admin_flow"))
+    was_admin_flow = bool(
+        context.user_data.get(
+            "admin_flow"
+        )
+    )
     await q.answer()
     context.user_data.clear()
     if was_admin_flow and is_admin(user_id):
         await q.edit_message_text(
-            "🔐 <b>پنل مدیریت</b>\n\nیک گزینه را انتخاب کنید:",
+            "🔐 <b>پنل مدیریت</b>\n\n"
+            "یک گزینه را انتخاب کنید:",
             parse_mode=ParseMode.HTML,
             reply_markup=admin_menu_keyboard(),
         )
     else:
         await q.edit_message_text(
             "❌ عملیات لغو شد.",
-            reply_markup=main_menu_keyboard(user_id),
+            reply_markup=main_menu_keyboard(
+                user_id
+            ),
         )
     return ConversationHandler.END
 
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    logger.exception("Unhandled Telegram error.", exc_info=context.error)
+async def error_handler(
+    update: object,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    logger.exception(
+        "Unhandled Telegram error.",
+        exc_info=context.error,
+    )
 
 def build_telegram_application():
     if not BOT_TOKEN:
-        raise RuntimeError("BOT_TOKEN environment variable is missing.")
+        raise RuntimeError(
+            "BOT_TOKEN environment variable is missing."
+        )
     if not ADMIN_IDS:
-        logger.warning("ADMIN_IDS is empty. No user will have admin access.")
-    
+        logger.warning(
+            "ADMIN_IDS is empty. "
+            "No user will have admin access."
+        )
     init_database()
-    
-    telegram_app = Application.builder().token(BOT_TOKEN).build()
-    
-    search_conv = ConversationHandler(
-        entry_points=[
-            CallbackQueryHandler(search_professors_start, pattern=r"^search_professors$"),
-        ],
-        states={
-            SEARCH_NAME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, search_professors_receive_name),
-            ],
-        },
-        fallbacks=[
-            CommandHandler("cancel", cancel),
-            CallbackQueryHandler(main_menu, pattern=r"^main_menu$"),
-        ],
-        per_chat=True,
-        per_user=True,
-        per_message=False,
+    telegram_app = (
+        Application
+        .builder()
+        .token(BOT_TOKEN)
+        .build()
     )
-    
     student_add = ConversationHandler(
         entry_points=[
-            CallbackQueryHandler(student_add_start, pattern=r"^student_add$"),
+            CallbackQueryHandler(
+                student_add_start,
+                pattern=r"^student_add$",
+            )
         ],
         states={
             ADD_NAME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, student_receive_name),
-                CallbackQueryHandler(student_continue_add, pattern=r"^continue_add$"),
+                MessageHandler(
+                    filters.TEXT
+                    & ~filters.COMMAND,
+                    student_receive_name,
+                )
             ],
             ADD_COURSE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, student_receive_course),
-                CallbackQueryHandler(main_menu, pattern=r"^main_menu$"),
-            ],
-            ADD_UNIVERSITY: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, student_receive_university),
+                MessageHandler(
+                    filters.TEXT
+                    & ~filters.COMMAND,
+                    student_receive_course,
+                )
             ],
         },
         fallbacks=[
-            CommandHandler("cancel", cancel),
-            CallbackQueryHandler(main_menu, pattern=r"^main_menu$"),
+            CommandHandler(
+                "cancel",
+                cancel,
+            )
         ],
         per_chat=True,
         per_user=True,
         per_message=False,
     )
-    
+    code_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(
+                enter_code_start,
+                pattern=r"^enter_code$",
+            )
+        ],
+        states={
+            PROFESSOR_CODE: [
+                MessageHandler(
+                    filters.TEXT
+                    & ~filters.COMMAND,
+                    receive_code,
+                )
+            ]
+        },
+        fallbacks=[
+            CommandHandler(
+                "cancel",
+                cancel,
+            )
+        ],
+        per_chat=True,
+        per_user=True,
+        per_message=False,
+    )
     rating_conv = ConversationHandler(
         entry_points=[
-            CallbackQueryHandler(rating_start, pattern=r"^rate:\d+$"),
+            CallbackQueryHandler(
+                rating_start,
+                pattern=r"^rate:\d+$",
+            )
         ],
         states={
             RATING_SCORE: [
-                CallbackQueryHandler(select_score, pattern=r"^score:[1-5]$"),
-                CallbackQueryHandler(cancel_callback, pattern=r"^cancel_rating$"),
+                CallbackQueryHandler(
+                    select_score,
+                    pattern=r"^score:[1-5]$",
+                ),
+                CallbackQueryHandler(
+                    cancel_callback,
+                    pattern=r"^cancel_rating$",
+                ),
             ],
             RATING_COMMENT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_comment),
-                CallbackQueryHandler(skip_comment, pattern=r"^skip_comment$"),
-                CallbackQueryHandler(cancel_callback, pattern=r"^cancel_rating$"),
+                MessageHandler(
+                    filters.TEXT
+                    & ~filters.COMMAND,
+                    receive_comment,
+                ),
+                CallbackQueryHandler(
+                    skip_comment,
+                    pattern=r"^skip_comment$",
+                ),
+                CallbackQueryHandler(
+                    cancel_callback,
+                    pattern=r"^cancel_rating$",
+                ),
             ],
         },
         fallbacks=[
-            CommandHandler("cancel", cancel),
+            CommandHandler(
+                "cancel",
+                cancel,
+            )
         ],
         per_chat=True,
         per_user=True,
         per_message=False,
     )
-    
     admin_add = ConversationHandler(
         entry_points=[
-            CallbackQueryHandler(admin_add_start, pattern=r"^admin_add$"),
+            CallbackQueryHandler(
+                admin_add_start,
+                pattern=r"^admin_add$",
+            )
         ],
         states={
             ADMIN_ADD_NAME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, admin_receive_name),
+                MessageHandler(
+                    filters.TEXT
+                    & ~filters.COMMAND,
+                    admin_receive_name,
+                )
             ],
             ADMIN_ADD_COURSE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, admin_receive_course),
-            ],
-            ADMIN_ADD_UNIVERSITY: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, admin_receive_university),
+                MessageHandler(
+                    filters.TEXT
+                    & ~filters.COMMAND,
+                    admin_receive_course,
+                )
             ],
         },
         fallbacks=[
-            CommandHandler("cancel", cancel),
+            CommandHandler(
+                "cancel",
+                cancel,
+            )
         ],
         per_chat=True,
         per_user=True,
         per_message=False,
     )
-    
-    telegram_app.add_handler(search_conv)
-    telegram_app.add_handler(student_add)
-    telegram_app.add_handler(rating_conv)
-    telegram_app.add_handler(admin_add)
-    telegram_app.add_handler(CommandHandler("start", start))
-    telegram_app.add_handler(CommandHandler("cancel", cancel))
-    telegram_app.add_handler(CallbackQueryHandler(main_menu, pattern=r"^main_menu$"))
-    telegram_app.add_handler(CallbackQueryHandler(view_professor, pattern=r"^view_prof:\d+(?::\d+)?$"))
-    telegram_app.add_handler(CallbackQueryHandler(admin_panel, pattern=r"^admin_panel$"))
-    telegram_app.add_handler(CallbackQueryHandler(pending_requests, pattern=r"^pending_requests(?::\d+)?$"))
-    telegram_app.add_handler(CallbackQueryHandler(manage_professors, pattern=r"^manage_professors(?::\d+)?$"))
-    telegram_app.add_handler(CallbackQueryHandler(admin_professor_details, pattern=r"^admin_prof:\d+$"))
-    telegram_app.add_handler(CallbackQueryHandler(delete_professor_callback, pattern=r"^delete_prof:\d+$"))
-    telegram_app.add_handler(CallbackQueryHandler(confirm_delete_callback, pattern=r"^confirm_delete:\d+$"))
-    telegram_app.add_handler(CallbackQueryHandler(request_action, pattern=r"^(approve|reject):\d+$"))
-    telegram_app.add_error_handler(error_handler)
-    
+    telegram_app.add_handler(
+        student_add
+    )
+    telegram_app.add_handler(
+        code_conv
+    )
+    telegram_app.add_handler(
+        rating_conv
+    )
+    telegram_app.add_handler(
+        admin_add
+    )
+    telegram_app.add_handler(
+        CommandHandler(
+            "start",
+            start,
+        )
+    )
+    telegram_app.add_handler(
+        CommandHandler(
+            "cancel",
+            cancel,
+        )
+    )
+    telegram_app.add_handler(
+        CallbackQueryHandler(
+            main_menu,
+            pattern=r"^main_menu$",
+        )
+    )
+    telegram_app.add_handler(
+        CallbackQueryHandler(
+            list_professors,
+            pattern=r"^list_professors(?::\d+)?$",
+        )
+    )
+    telegram_app.add_handler(
+        CallbackQueryHandler(
+            view_professor,
+            pattern=r"^view_prof:\d+(?::\d+)?$",
+        )
+    )
+    telegram_app.add_handler(
+        CallbackQueryHandler(
+            admin_panel,
+            pattern=r"^admin_panel$",
+        )
+    )
+    telegram_app.add_handler(
+        CallbackQueryHandler(
+            pending_requests,
+            pattern=r"^pending_requests(?::\d+)?$",
+        )
+    )
+    telegram_app.add_handler(
+        CallbackQueryHandler(
+            manage_professors,
+            pattern=r"^manage_professors(?::\d+)?$",
+        )
+    )
+    telegram_app.add_handler(
+        CallbackQueryHandler(
+            admin_professor_details,
+            pattern=r"^admin_prof:\d+$",
+        )
+    )
+    telegram_app.add_handler(
+        CallbackQueryHandler(
+            delete_professor_callback,
+            pattern=r"^delete_prof:\d+$",
+        )
+    )
+    telegram_app.add_handler(
+        CallbackQueryHandler(
+            confirm_delete_callback,
+            pattern=r"^confirm_delete:\d+$",
+        )
+    )
+    telegram_app.add_handler(
+        CallbackQueryHandler(
+            request_action,
+            pattern=r"^(approve|reject):\d+$",
+        )
+    )
+    telegram_app.add_error_handler(
+        error_handler
+    )
     return telegram_app
 
 async def run_bot_async():
@@ -2038,12 +2509,30 @@ def ping():
     return "pong"
 
 def run_web():
-    port = int(os.environ.get("PORT", "5000"))
-    logger.info("🌐 Flask server starting on port %s", port)
-    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False, threaded=True)
+    port = int(
+        os.environ.get(
+            "PORT",
+            "5000",
+        )
+    )
+    logger.info(
+        "🌐 Flask server starting on port %s",
+        port,
+    )
+    app.run(
+        host="0.0.0.0",
+        port=port,
+        debug=False,
+        use_reloader=False,
+        threaded=True,
+    )
 
 if __name__ == "__main__":
     logger.info("🚀 Starting Ostad Bot service...")
-    web_thread = threading.Thread(target=run_web, name="flask-web", daemon=True)
+    web_thread = threading.Thread(
+        target=run_web,
+        name="flask-web",
+        daemon=True,
+    )
     web_thread.start()
     run_bot()
